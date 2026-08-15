@@ -27,6 +27,7 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq,
                            _ai_review_records)
 from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
+                       ARInvoiceEntry,
                        NON_CASH_PAYMENT_SOURCES, pending_draft_q,
                        BatchInvoiceEvent,
                        CollectionBudget, PaymentBudget,

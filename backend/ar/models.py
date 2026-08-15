@@ -473,6 +473,30 @@ class ARRecord(models.Model):
                     Decimal('0.01'), rounding=ROUND_HALF_UP)
         return self.tax_amount
 
+    def recompute_invoice_from_entries(self, save=True):
+        """开票三字段以「开票明细」为正源重算：实际开票额=Σ明细、开票日期=首次开票日、
+        税额=差额模式Σ手填/全额模式按合计自动（recompute_derived 内 _compute_tax）。
+        无明细时全部清空回未开票态。挂批次的记录不走此路径（批次事件是其正源）。"""
+        entries = list(self.invoice_entries.all()) if self.pk else []
+        if entries:
+            self.actual_invoice_amount = sum((e.amount or Decimal('0')) for e in entries)
+            dates = [e.invoice_date for e in entries if e.invoice_date]
+            self.invoice_date = min(dates) if dates else None
+            if self.project.invoice_mode == '差额':
+                taxes = [e.tax_amount for e in entries if e.tax_amount is not None]
+                self.tax_amount = sum(taxes, Decimal('0')) if taxes else None
+        else:
+            self.actual_invoice_amount = None
+            self.invoice_date = None
+            self.tax_amount = None
+        if save:
+            ARRecord.objects.filter(pk=self.pk).update(
+                actual_invoice_amount=self.actual_invoice_amount,
+                invoice_date=self.invoice_date,
+                tax_amount=self.tax_amount,
+            )
+        self.recompute_derived(save=save)   # 全额模式税额随合计重算；未收不受开票影响但保持派生一致
+
     def recompute_derived(self, save=True):
         # 未收回金额口径：上账金额 + 调整额 - 回款金额
         base = self.estimated_amount or Decimal('0')
@@ -691,6 +715,7 @@ class ARRecord(models.Model):
         if include_payments:
             d['payments'] = [p.to_dict() for p in self.payments.order_by('payment_no')]
             d['adjustments'] = [a.to_dict() for a in self.adjustments.all()]
+            d['invoice_entries'] = [e.to_dict() for e in self.invoice_entries.all()]
         return d
 
 
@@ -822,6 +847,44 @@ class ARAdjustment(models.Model):
             'amount': str(self.amount),
             'reason': self.reason,
             'adjust_date': str(self.adjust_date) if self.adjust_date else None,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ARInvoiceEntry(models.Model):
+    """开票明细 — 一条应收可多次开票，每次各带 金额/税额/日期（与差额调整明细同构）。
+
+    ARRecord.actual_invoice_amount / tax_amount / invoice_date 退化为派生：
+    实际开票额=Σ明细金额；开票日期=首次开票日（票后账期/对账默认日以首开为基准，
+    与批次开票取首次事件日的既有口径一致）；税额=全额模式按合计自动算、差额模式
+    Σ明细手填税额。挂批次（invoice_batch_no）的记录仍由批次开票事件管理，不建明细。"""
+    ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
+                                  related_name='invoice_entries', db_index=True)
+    entry_no = models.IntegerField('开票序号')
+    amount = models.DecimalField('开票金额(价税合计)', max_digits=15, decimal_places=2)
+    tax_amount = models.DecimalField('税额(差额模式手填)', max_digits=15, decimal_places=2,
+                                     null=True, blank=True)
+    invoice_date = models.DateField('开票日期', null=True, blank=True, db_index=True)
+    notes = models.CharField('备注', max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_ar_invoices')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_invoice_entries'
+        ordering = ['ar_record', 'entry_no', 'id']
+        indexes = [models.Index(fields=['ar_record', 'invoice_date'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ar_record_id': self.ar_record_id,
+            'entry_no': self.entry_no,
+            'amount': str(self.amount),
+            'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
+            'invoice_date': str(self.invoice_date) if self.invoice_date else None,
+            'notes': self.notes,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

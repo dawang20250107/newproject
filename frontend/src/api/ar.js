@@ -83,6 +83,8 @@ const ar = {
   listAdjustments: id => api.get(`/ar/records/${id}/adjustments`),
   addAdjustment: (id, d) => api.post(`/ar/records/${id}/adjustments`, d),
   deleteAdjustment: (rid, aid) => api.delete(`/ar/records/${rid}/adjustments/${aid}`),
+  addInvoiceEntry: (id, d) => api.post(`/ar/records/${id}/invoices`, d),
+  deleteInvoiceEntry: (rid, eid) => api.delete(`/ar/records/${rid}/invoices/${eid}`),
 
   // Payments
   listPayments: id => api.get(`/ar/records/${id}/payments`),

@@ -60,6 +60,8 @@ urlpatterns = [
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
     path('records/<int:pk>/adjustments', views.ar_adjustments),
     path('records/<int:pk>/adjustments/<int:aid>', views.ar_adjustment_detail),
+    path('records/<int:pk>/invoices', views.ar_invoice_entries),
+    path('records/<int:pk>/invoices/<int:eid>', views.ar_invoice_entry_detail),
 
     # 账龄分桶边界配置
     path('aging-config', views.ar_aging_config),

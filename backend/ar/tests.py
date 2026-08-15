@@ -6,7 +6,7 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, AdvanceInstallment, CollectionBudget, PaymentBudget,
+from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, ARInvoiceEntry, AdvanceInstallment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Customer,
                        Contract, ContractParty, ContractProject, ActionItem)
 from paikuan.models import JobPermission, PaikuanUser
@@ -5415,3 +5415,101 @@ class AdvanceCashTimingTests(TestCase):
         r0 = bc['rows'][0]
         self.assertEqual(float(r0['advance_amount']), 600.0)
         self.assertEqual(float(r0['written_off']), 250.0)
+
+
+class ARInvoiceEntryTests(TestCase):
+    """开票明细：多次开票，主表三字段派生（Σ金额/首开日/税额），上限与批次互斥守卫。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002200', name='InvAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='开票客户', short_name='开票项目', delivery_dept=self.dept,
+            sales_contact='s', project_manager='m',
+            invoice_mode='全额', tax_rate=Decimal('0.06'))
+        self.rec = ARRecord.objects.create(
+            project=self.proj, operation_date=date(2026, 5, 1),
+            estimated_amount=Decimal('100000'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, body):
+        return self.client.post(f'/api/pk/ar/records/{self.rec.id}/invoices',
+                                data=json.dumps(body), content_type='application/json',
+                                **self.auth())
+
+    def test_multiple_entries_derive_record_fields(self):
+        # 第1次 60000（6/10）→ 第2次 40000（7/5）：合计10万、首开日6/10、全额税自动
+        r1 = self._post({'amount': '60000', 'invoice_date': '2026-06-10'})
+        self.assertEqual(r1.status_code, 200, r1.content)
+        r2 = self._post({'amount': '40000', 'invoice_date': '2026-07-05'})
+        d = r2.json()['data']
+        self.assertEqual(len(d['invoice_entries']), 2)
+        self.assertEqual(float(d['actual_invoice_amount']), 100000.0)
+        self.assertEqual(d['invoice_date'], '2026-06-10')          # 首次开票日
+        self.rec.refresh_from_db()
+        # 全额模式税额按合计自动：100000/1.06*0.06
+        self.assertEqual(self.rec.tax_amount,
+                         (Decimal('100000') / Decimal('1.06') * Decimal('0.06'))
+                         .quantize(Decimal('0.01')))
+
+        # 删除第2次 → 回退到 60000、税额随之重算
+        eid = d['invoice_entries'][1]['id']
+        rd = self.client.delete(f'/api/pk/ar/records/{self.rec.id}/invoices/{eid}', **self.auth())
+        self.assertEqual(rd.status_code, 200)
+        self.assertEqual(float(rd.json()['data']['actual_invoice_amount']), 60000.0)
+
+    def test_cap_and_negative_guards(self):
+        # 上限：累计 ≤ 上账+差额
+        self.assertEqual(self._post({'amount': '120000', 'invoice_date': '2026-06-10'}).status_code, 400)
+        self._post({'amount': '80000', 'invoice_date': '2026-06-10'})
+        self.assertEqual(self._post({'amount': '30000', 'invoice_date': '2026-07-01'}).status_code, 400)
+        # 红冲合法、冲成负数拒绝
+        self.assertEqual(self._post({'amount': '-20000', 'invoice_date': '2026-07-02'}).status_code, 200)
+        self.assertEqual(self._post({'amount': '-70000', 'invoice_date': '2026-07-03'}).status_code, 400)
+
+    def test_batch_linked_record_rejected_and_put_guard(self):
+        # 挂批次的记录不得建记录级明细
+        ARRecord.objects.filter(pk=self.rec.pk).update(invoice_batch_no='PF-001')
+        self.rec.refresh_from_db()
+        self.assertEqual(self._post({'amount': '1000', 'invoice_date': '2026-06-10'}).status_code, 400)
+        ARRecord.objects.filter(pk=self.rec.pk).update(invoice_batch_no='')
+        self.rec.refresh_from_db()
+        # 有明细后：PUT 直改开票金额被拒（回传原值放行）；再挂批次也被拒
+        self._post({'amount': '50000', 'invoice_date': '2026-06-10'})
+        def put(body):
+            return self.client.put(f'/api/pk/ar/records/{self.rec.id}',
+                                   data=json.dumps(body), content_type='application/json',
+                                   **self.auth())
+        self.assertEqual(put({'actual_invoice_amount': '70000'}).status_code, 400)
+        self.assertEqual(put({'actual_invoice_amount': '50000'}).status_code, 200)   # 原值放行
+        self.assertEqual(put({'invoice_batch_no': 'PF-002'}).status_code, 400)
+
+    def test_list_include_payments_carries_invoice_entries(self):
+        # 列表（编辑态数据源）必须带出 invoice_entries，否则重开编辑框明细为空
+        self._post({'amount': '30000', 'invoice_date': '2026-06-10'})
+        self._post({'amount': '20000', 'invoice_date': '2026-07-08'})
+        resp = self.client.get('/api/pk/ar/records?include_payments=1', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        row = next(r for r in resp.json()['data']['items'] if r['id'] == self.rec.id)
+        self.assertEqual([e['amount'] for e in row['invoice_entries']],
+                         ['30000.00', '20000.00'])
+        self.assertEqual(float(row['actual_invoice_amount']), 50000.0)
+
+    def test_create_with_invoice_makes_entry_one(self):
+        resp = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-06-01',
+            'estimated_amount': '5000', 'actual_invoice_amount': '5000',
+            'invoice_date': '2026-06-15'}), content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rid = resp.json()['data']['id']
+        entries = ARInvoiceEntry.objects.filter(ar_record_id=rid)
+        self.assertEqual(entries.count(), 1)
+        self.assertEqual(entries.first().amount, Decimal('5000'))

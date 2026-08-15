@@ -772,6 +772,44 @@ async function removeAdjustment(a) {
   finally { adjBusy.value = false }
 }
 
+// ── 开票明细（编辑态管理器）：一条应收可多次开票，各带金额/税额/日期 ────────────
+// 主表 实际开票额/税额/开票日期 为派生（Σ明细 / 首开日 / 差额Σ手填·全额自动）。
+const invList = ref([])
+const invForm = reactive({ amount: '', tax: '', date: todayCST() })
+const invBusy = ref(false)
+const invTotal = computed(() =>
+  invList.value.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0))
+function _syncInvDerived(d) {
+  // 后端返回派生后的主表开票口径 → 同步 recForm（保存 PUT 回传原值需与库一致）与行内
+  recForm.actual_invoice_amount = d.actual_invoice_amount ?? ''
+  recForm.tax_amount = d.tax_amount ?? ''
+  recForm.invoice_date = d.invoice_date ?? ''
+  invList.value = d.invoice_entries || []
+}
+async function addInvoiceEntry() {
+  if (!parseFloat(invForm.amount)) { toast.error('开票金额不能为0（红字冲销请填负数）'); return }
+  if (!invForm.date) { toast.error('请选择开票日期'); return }
+  invBusy.value = true
+  try {
+    const res = await ar.addInvoiceEntry(editRec.value.id,
+      { amount: invForm.amount, tax_amount: invForm.tax || null, invoice_date: invForm.date })
+    _syncInvDerived(res.data)
+    invForm.amount = ''; invForm.tax = ''; invForm.date = todayCST()
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { invBusy.value = false }
+}
+async function removeInvoiceEntry(en) {
+  if (!(await confirmDlg(`删除第${en.entry_no}次开票（${en.amount}）？主表开票金额/税额/日期将随之回退。`))) return
+  invBusy.value = true
+  try {
+    const res = await ar.deleteInvoiceEntry(editRec.value.id, en.id)
+    _syncInvDerived(res.data)
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { invBusy.value = false }
+}
+
 // ── 开票批次号批量设置 ──────────────────────────────────────────────────────────
 const showBatchModal = ref(false)
 const batchNoInput = ref('')
@@ -1670,6 +1708,8 @@ function openEdit(rec) {
   })
   adjList.value = rec.adjustments || []
   Object.assign(adjForm, { amount: '', reason: '', date: todayCST() })
+  invList.value = rec.invoice_entries || []
+  Object.assign(invForm, { amount: '', tax: '', date: todayCST() })
   showModal.value = true
   focusRecModal()
 }
@@ -1842,6 +1882,19 @@ async function saveRec(andContinue = false) {
   saving.value = true
   try {
     if (!recForm.operation_date) { toast.error('请选择运作日期'); saving.value = false; return }
+    // 操作习惯：编辑态里填好了 调整/开票 未点「追加」就直接点保存 → 视为要提交这一笔，
+    // 自动落库后再保存（「追加」按钮只在一次录多笔时才需要）。校验不过则中断保存并提示。
+    if (editRec.value && parseFloat(adjForm.amount)) {
+      if (!adjForm.reason.trim()) { toast.error('已填调整金额：请补写调整原因后再保存（或清空金额）'); saving.value = false; return }
+      if (!adjForm.date) { toast.error('已填调整金额：请选择调整日期后再保存'); saving.value = false; return }
+      await addAdjustment()
+      if (parseFloat(adjForm.amount)) { saving.value = false; return }   // 落库失败（表单未被清空）→ 中断
+    }
+    if (editRec.value && parseFloat(invForm.amount)) {
+      if (!invForm.date) { toast.error('已填开票金额：请选择开票日期后再保存'); saving.value = false; return }
+      await addInvoiceEntry()
+      if (parseFloat(invForm.amount)) { saving.value = false; return }
+    }
     const payload = {
       project_id: recForm.project_id, operation_date: recForm.operation_date,
       estimated_amount: recForm.estimated_amount || 0,
@@ -3340,18 +3393,48 @@ function clearFilters() {
                 <span>预估上账金额</span>
                 <input ref="estAmtInput" v-model="recForm.estimated_amount" type="number" step="0.01" />
               </label>
-              <label class="form-field">
-                <span>实际开票金额</span>
-                <input v-model="recForm.actual_invoice_amount" type="number" step="0.01" placeholder="开票后填写" />
-              </label>
-              <label class="form-field">
-                <span>税额（差额模式手填）</span>
-                <input v-model="recForm.tax_amount" type="number" step="0.01" placeholder="全额模式自动计算" />
-              </label>
-              <label class="form-field">
-                <span>开票日期</span>
-                <input v-model="recForm.invoice_date" type="date" />
-              </label>
+              <!-- 新建：首笔开票直接填（后端自动落为开票明细#1）；编辑：开票明细管理器（多次开票） -->
+              <template v-if="!editRec">
+                <label class="form-field">
+                  <span>实际开票金额</span>
+                  <input v-model="recForm.actual_invoice_amount" type="number" step="0.01" placeholder="开票后填写" />
+                </label>
+                <label class="form-field">
+                  <span>税额（差额模式手填）</span>
+                  <input v-model="recForm.tax_amount" type="number" step="0.01" placeholder="全额模式自动计算" />
+                </label>
+                <label class="form-field">
+                  <span>开票日期</span>
+                  <input v-model="recForm.invoice_date" type="date" />
+                </label>
+              </template>
+              <div v-else class="form-field span2 adj-box">
+                <span>开票明细<i class="adj-total">已开合计 {{ fmtCell(invTotal) }} · 税额 {{ recForm.tax_amount ? fmtCell(recForm.tax_amount) : '—' }} · 首开日 {{ recForm.invoice_date || '—' }}</i></span>
+                <div v-if="recForm.invoice_batch_no" class="adj-empty">
+                  该记录属于开票批次「{{ recForm.invoice_batch_no }}」——开票请在批次开票中操作（批次支持多次开票并逐次分摊到成员）
+                </div>
+                <template v-else>
+                  <div v-if="invList.length" class="adj-list">
+                    <div v-for="en in invList" :key="en.id" class="adj-item">
+                      <b :class="parseFloat(en.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(en.amount) >= 0 ? '' : '' }}{{ en.amount }}</b>
+                      <span class="adj-reason">第{{ en.entry_no }}次<template v-if="en.tax_amount"> · 税 {{ en.tax_amount }}</template></span>
+                      <em v-if="en.invoice_date">{{ en.invoice_date }}</em>
+                      <em v-if="en.created_by_name">{{ en.created_by_name }}</em>
+                      <button type="button" class="adj-del" title="删除该次开票" @click="removeInvoiceEntry(en)">✕</button>
+                    </div>
+                  </div>
+                  <div v-else class="adj-empty">未开票——每次开票一行（金额/税额/日期），可多次追加，红字冲销填负数</div>
+                  <div class="adj-add">
+                    <input v-model="invForm.amount" type="number" step="0.01" class="adj-amt-inp" placeholder="开票金额（价税合计）" />
+                    <input v-model="invForm.tax" type="number" step="0.01" class="adj-amt-inp" placeholder="税额（差额模式填）" title="差额模式逐笔手填；全额模式留空由税率自动计算" />
+                    <input v-model="invForm.date" type="date" class="adj-date-inp" title="本次开票日期；主表开票日期取首次开票日" />
+                    <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="invBusy" @click="addInvoiceEntry">
+                      {{ invBusy ? '…' : '＋ 追加开票' }}
+                    </button>
+                  </div>
+                  <div class="adj-empty" style="margin-top:4px">填好金额直接点「保存」即生效；「追加开票」仅在一次录多笔时使用</div>
+                </template>
+              </div>
               <label class="form-field">
                 <span>对账日期</span>
                 <input v-model="recForm.reconciliation_date" type="date" />
@@ -3409,6 +3492,7 @@ function clearFilters() {
                           :class="{ full: adjForm.reason.length >= 200 }">{{ adjForm.reason.length }}/200</span>
                   </div>
                 </div>
+                <div class="adj-empty" style="margin-top:4px">填好金额与原因直接点「保存」即生效；「追加调整」仅在一次录多笔时使用</div>
               </div>
               <label class="form-field span2">
                 <span>开票批次号<span style="color:var(--muted);font-size:11px;margin-left:4px">合并开票时多条填同一批次号，留空=单独开票</span></span>
