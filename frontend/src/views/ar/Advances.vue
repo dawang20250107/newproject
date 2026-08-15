@@ -820,10 +820,10 @@ async function copyWholeRow(row, cols) {
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
 
-// 双击数据行 = 打开编辑（主操作）；默认编辑预收/预付记录，可传入供应商编辑等其它处理器
-function onRowDblClick(item, e, handler = openEdit) {
+// 双击数据行：预收/预付记录 = 打开收付明细（查看为主，编辑走右键）；供应商表 = 编辑
+function onRowDblClick(item, e, handler = openEdit, allowed = canCreate.value) {
   if (e.target.closest('input, button, select, textarea, a')) return
-  if (!canCreate.value) return
+  if (!allowed) return
   handler(item)
 }
 
@@ -1083,7 +1083,7 @@ onMounted(async () => {
               </tr>
               <tr v-else-if="!items.length"><td colspan="12" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
-                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event, openInstallments, canCreate || canInstAction)">
                 <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td><span v-if="r.short_name" class="proj-name">{{ r.short_name }}</span><span v-else>—</span></td>
