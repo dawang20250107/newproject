@@ -2793,8 +2793,8 @@ def report_dept_pl_export(request):
 
 # ── 经营情况表导出 ─────────────────────────────────────────────────────────────
 
-# 费销比适用的费用类一级科目（费销比＝当月费用÷当月主营业务收入）
-_OP_EXPENSE_L1 = {'销售费用', '管理费用', '财务费用', '集团管理费用'}
+# 费销比适用的一级科目（费销比＝当月成本或费用÷当月主营业务收入）：成本与费用都显示
+_OP_RATIO_L1 = {'主营业务成本', '税金成本', '销售费用', '管理费用', '财务费用', '集团管理费用'}
 # 计算行的 Excel 公式构成：名称 → [(符号, 引用一级科目名)]，与 _CALC_FORMULAS 同口径
 _OP_CALC_REFS = {
     '运营毛利': [(1, '主营业务收入'), (-1, '主营业务成本'), (-1, '税金成本')],
@@ -2895,7 +2895,8 @@ def _operating_sheet(ws, bu, year, months):
         a = ws.cell(row=r, column=1)
         a.font = Font(name=FN, size=size, bold=bold, color=BLACK)
         a.border = border
-        a.alignment = Alignment(indent=indent, vertical='center')
+        # Excel 的缩进仅在 horizontal='left' 时生效（general 对齐下被忽略）
+        a.alignment = Alignment(horizontal='left', indent=indent, vertical='center')
         if fill:
             a.fill = fill
         for c in range(2, ncols + 1):
@@ -2936,7 +2937,7 @@ def _operating_sheet(ws, bu, year, months):
     rev_dept_row = {}    # l2k → 主营业务收入部门行（部门费销比分母）
 
     for l1 in l1_cats:
-        is_exp = l1.name in _OP_EXPENSE_L1
+        is_exp = l1.name in _OP_RATIO_L1
 
         if l1.is_calculated:
             style_row(row, 11, True, fill=FILL_CALC, border=B_TOP, height=19)
@@ -2978,14 +2979,14 @@ def _operating_sheet(ws, bu, year, months):
             else:
                 dept_r = row
                 child_rows.append(dept_r)
-                style_row(dept_r, 10, False, indent=2)
+                style_row(dept_r, 10.5, True, indent=1)
                 ws.cell(row=dept_r, column=1, value=l2_meta[(l1.id, l2k)][0])
                 row += 1
             det_rows = []
             for key in dets:
                 dr = row
                 det_rows.append(dr)
-                style_row(dr, 9.5, False, indent=4 if not collapse else 2)
+                style_row(dr, 9.5, False, indent=3 if not collapse else 1)
                 ws.cell(row=dr, column=1, value=l3_meta[key][0])
                 for m in months:
                     ws.cell(row=dr, column=mcols[m], value=round(leaf[key].get(m, 0), 2))
@@ -2998,7 +2999,7 @@ def _operating_sheet(ws, bu, year, months):
             if dets and any(abs(v) > 0.005 for v in orphan.values()):
                 dr = row
                 det_rows.append(dr)
-                style_row(dr, 9.5, False, indent=4 if not collapse else 2)
+                style_row(dr, 9.5, False, indent=3 if not collapse else 1)
                 ws.cell(row=dr, column=1, value='（未分明细）')
                 for m in months:
                     ws.cell(row=dr, column=mcols[m], value=round(orphan.get(m, 0), 2))
@@ -3041,7 +3042,7 @@ def _operating_sheet(ws, bu, year, months):
     row += 1
     adj_rows = []
     for label in ('调增：', '调增：', '调减：'):
-        style_row(row, 10, False, indent=2)
+        style_row(row, 10, False, indent=1)
         ws.cell(row=row, column=1, value=label)
         put_common(row)
         put_ratios(row, None)
@@ -3079,14 +3080,24 @@ def _operating_sheet(ws, bu, year, months):
                                  right=med if side == 'right' else b.right,
                                  top=b.top, bottom=b.bottom)
 
-    # ── 列宽 / 冻结 / 打印 ──
-    ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 17
+    # ── 列宽：按本表最大金额位数动态放足（微软雅黑+加粗偏宽，避免 ####）──
+    nm_by_m = {m: _compute_l1_name_map(l1_cats, dict(raw_by_m.get(m, {})))[0] for m in months}
+    month_max = max((abs(v) for nm in nm_by_m.values() for v in nm.values()), default=0.0)
+    total_max = 0.0
+    for name in {k for nm in nm_by_m.values() for k in nm}:
+        total_max = max(total_max, sum(abs(nm_by_m[m].get(name, 0.0)) for m in months))
+
+    def _fit(v, lo, hi):
+        return max(lo, min(hi, len(f'{-abs(v):,.2f}') + 5))
+
+    w_month = _fit(month_max, 13, 24)
+    ws.column_dimensions['A'].width = 32
+    ws.column_dimensions['B'].width = _fit(total_max, w_month + 1, 26)
     for m in months:
-        ws.column_dimensions[L(mcols[m])].width = 14.5
+        ws.column_dimensions[L(mcols[m])].width = w_month
     for c in rcols.values():
         ws.column_dimensions[L(c)].width = 10.5
-    ws.column_dimensions[L(col_mom)].width = 14.5
+    ws.column_dimensions[L(col_mom)].width = w_month
     ws.column_dimensions[L(col_note)].width = 14
     ws.freeze_panes = 'C3'
     ws.page_setup.orientation = 'landscape'

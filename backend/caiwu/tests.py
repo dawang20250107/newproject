@@ -270,6 +270,15 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(ws.cell(row=xr, column=5).value, 150.0)              # 明细叶子 = 数值
         # 一级费销比引用收入一级行；部门费销比引用本部门收入行
         self.assertIn(f'/C{rr}', str(ws.cell(row=sr, column=4).value))
+        # 成本类科目同样显示费销比（成本÷收入）
+        cost_r = rowmap['主营业务成本']
+        self.assertIn(f'/C{rr}', str(ws.cell(row=cost_r, column=4).value))
+        # 部门/明细行左对齐缩进生效（Excel 缩进需 horizontal='left'）
+        self.assertEqual(ws.cell(row=dr, column=1).alignment.horizontal, 'left')
+        self.assertTrue(ws.cell(row=dr, column=1).alignment.indent >= 1)
+        self.assertTrue(ws.cell(row=xr, column=1).alignment.indent > ws.cell(row=dr, column=1).alignment.indent)
+        # 部门行加粗
+        self.assertTrue(ws.cell(row=dr, column=1).font.bold)
         sell_dept_r = None
         for r in range(sr + 1, xr):
             if (ws.cell(row=r, column=1).value or '').strip() == '一部':
