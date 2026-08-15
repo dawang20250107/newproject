@@ -1085,8 +1085,8 @@ onMounted(async () => {
                   @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
                 <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
-                <td><span v-if="r.short_name" class="proj-name">{{ r.short_name }}</span><span v-else class="dept-tag">—</span></td>
-                <td><span class="dept-tag">{{ r.delivery_dept }}</span></td>
+                <td><span v-if="r.short_name" class="proj-name">{{ r.short_name }}</span><span v-else>—</span></td>
+                <td>{{ r.delivery_dept }}</td>
                 <td>{{ r.occur_year }}-{{ String(r.occur_month).padStart(2, '0') }}</td>
                 <td>{{ r.occur_date || '—' }}</td>
                 <td v-if="show('adv_amount')" class="amt num-strong">{{ fmtAmt(r.advance_amount) }}</td>
@@ -1256,14 +1256,15 @@ onMounted(async () => {
               <tr>
                 <th>供应商名称</th>
                 <th class="ctr">类型</th>
-                <th>关联项目 / 部门</th>
+                <th>关联项目</th>
+                <th>部门</th>
                 <th>联系人</th>
                 <th class="amt">预付余额</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!supplierLoading && !supplierItems.length">
-                <td colspan="5" class="empty">暂无供应商，点击「新增供应商」添加</td>
+                <td colspan="6" class="empty">暂无供应商，点击「新增供应商」添加</td>
               </tr>
               <tr v-for="s in supplierItems" :key="s.id" @contextmenu.prevent="ctxSup.open($event, s)" @dblclick="onRowDblClick(s, $event, openEditSupplier)">
                 <td><b>{{ s.name }}</b><div v-if="s.notes" class="dept-tag">{{ s.notes }}</div></td>
@@ -1272,10 +1273,8 @@ onMounted(async () => {
                     {{ s.supplier_type === 'private' ? '私有' : '公共' }}
                   </span>
                 </td>
-                <td>
-                  <div v-if="s.project_short_name" class="proj-name">{{ s.project_short_name }}</div>
-                  <div class="dept-tag">{{ s.delivery_dept }}</div>
-                </td>
+                <td><span v-if="s.project_short_name" class="proj-name">{{ s.project_short_name }}</span><span v-else>—</span></td>
+                <td>{{ s.delivery_dept }}</td>
                 <td>{{ s.contact || '—' }}</td>
                 <td class="amt">
                   <span :class="{ 'num-strong': parseFloat(s.prepaid_balance) > 0, 'bal-positive': parseFloat(s.prepaid_balance) > 0 }">
