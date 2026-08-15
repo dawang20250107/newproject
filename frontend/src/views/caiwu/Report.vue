@@ -163,6 +163,18 @@ async function exportDeptPl() {
   } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
+// 经营情况表：一级科目→部门→明细逐级缩进，合计+逐月+末两月费销比+环比，
+// 底部调增调减手工填列区联动实际经营情况；每事业部一个 sheet
+async function exportOperating() {
+  exporting.value = true
+  try {
+    const params = { year: year.value }
+    if (selectedBu.value) params.bu = selectedBu.value
+    const res = await api.get('/report/operating-export', { params, responseType: 'blob' })
+    downloadBlob(res, `经营情况表_${selectedBu.value || '全部事业部'}_${year.value}年.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { exporting.value = false }
+}
 
 const toast = useToast()
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
@@ -241,6 +253,10 @@ onMounted(() => {
         <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportDeptPl"
                 title="按 科目行 × 项目部列 导出分部门利润表，逐月各一个 sheet（金蝶部门明细口径）">
           {{ exporting ? '导出中…' : '↓ 分部门利润表' }}
+        </button>
+        <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportOperating"
+                title="一级科目→部门→明细逐级缩进；合计+逐月+末两月费销比+金额环比；底部调增调减填列区联动实际经营情况；每事业部一个 sheet">
+          {{ exporting ? '导出中…' : '↓ 经营情况表' }}
         </button>
       </div>
     </div>

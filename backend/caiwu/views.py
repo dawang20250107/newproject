@@ -363,10 +363,11 @@ def _extract_json_block(text, kind='object'):
         return None
 
 
-def _build_excel_response(wb, filename):
-    # 公式注入防护：出口统一全表扫描（全系统共享单一实现 wxcloudrun.excel_safe）
+def _build_excel_response(wb, filename, safe_coords=None):
+    # 公式注入防护：出口统一全表扫描（全系统共享单一实现 wxcloudrun.excel_safe）；
+    # safe_coords 为导出函数登记的模板公式坐标白名单（详见 sanitize_workbook）
     from wxcloudrun.excel_safe import sanitize_workbook
-    sanitize_workbook(wb)
+    sanitize_workbook(wb, safe_coords=safe_coords)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -2788,6 +2789,360 @@ def report_dept_pl_export(request):
         wb.create_sheet('无数据')
     bu_label = bu_param or '全部事业部'
     return _build_excel_response(wb, f'分部门利润表_{bu_label}_{year}年.xlsx')
+
+
+# ── 经营情况表导出 ─────────────────────────────────────────────────────────────
+
+# 费销比适用的费用类一级科目（费销比＝当月费用÷当月主营业务收入）
+_OP_EXPENSE_L1 = {'销售费用', '管理费用', '财务费用', '集团管理费用'}
+# 计算行的 Excel 公式构成：名称 → [(符号, 引用一级科目名)]，与 _CALC_FORMULAS 同口径
+_OP_CALC_REFS = {
+    '运营毛利': [(1, '主营业务收入'), (-1, '主营业务成本'), (-1, '税金成本')],
+    '经营毛利': [(1, '运营毛利'), (-1, '销售费用'), (-1, '管理费用'), (-1, '财务费用'),
+                 (1, '营业外收入'), (-1, '营业外支出')],
+    '经营净利': [(1, '经营毛利'), (-1, '集团管理费用')],
+}
+
+
+def _operating_sheet(ws, bu, year, months):
+    """写一张「事业部」经营情况表（全年一张 Sheet）：
+    行 = 一级科目(粗/浅灰底) → 部门(缩进) → 明细科目(再缩进)，
+    列 = 科目明细 | 合计 | 各已发布月（末两月各紧跟一列费销比）| 金额环比 | 备注，
+    底部 = 调增调减手工填列区(空行) + 调整合计 + 实际经营情况（公式行，填了即联动）。
+    汇总行/合计列/环比/费销比全部写 Excel 公式；0 值与无意义比率以 - 显示，负数负号显示。"""
+    from collections import defaultdict
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
+    batch_ids = list(ImportBatch.objects.filter(
+        business_unit=bu, year=year, month__in=months,
+        status=ImportBatch.STATUS_PUBLISHED, batch_type=ImportBatch.TYPE_DEPT
+    ).values_list('id', flat=True))
+    entries = _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
+
+    # 聚合到 (一级, 部门, 明细) × 月
+    leaf = defaultdict(lambda: defaultdict(float))   # (l1_id,l2k,l3k) -> {m: amt}
+    l2_meta = {}                                     # (l1_id,l2k) -> (name, sort)
+    l3_meta = {}                                     # (l1_id,l2k,l3k) -> (name, sort)
+    raw_by_m = defaultdict(lambda: defaultdict(float))
+    for r in (entries.values('batch__month', 'l1_id', 'l2_id', 'l2__name', 'l2__sort_order',
+                             'l3_id', 'l3__name', 'l3__sort_order')
+              .annotate(amt=Sum('amount'))):
+        m, amt = r['batch__month'], float(r['amt'] or 0)
+        l2k = r['l2_id'] if r['l2_id'] is not None else '__none__'
+        l3k = r['l3_id'] if r['l3_id'] is not None else '__none__'
+        leaf[(r['l1_id'], l2k, l3k)][m] += amt
+        raw_by_m[m][r['l1_id']] += amt
+        l2_meta.setdefault((r['l1_id'], l2k),
+                           ((r['l2__name'] or '（未分部门）'),
+                            r['l2__sort_order'] if r['l2__sort_order'] is not None else 9999))
+        if l3k != '__none__':
+            l3_meta.setdefault((r['l1_id'], l2k, l3k),
+                               ((r['l3__name'] or '（未命名明细）'),
+                                r['l3__sort_order'] if r['l3__sort_order'] is not None else 9999))
+
+    # ── 列布局：A 科目明细 | B 合计 | 各月（末两月后插费销比列）| 环比 | 备注 ──
+    ratio_months = set(months[-2:])
+    mcols, rcols = {}, {}
+    col = 3
+    for m in months:
+        mcols[m] = col
+        col += 1
+        if m in ratio_months:
+            rcols[m] = col
+            col += 1
+    col_mom, col_note = col, col + 1
+    ncols = col_note
+    L = get_column_letter
+    fset = set()   # 模板公式坐标登记（导出出口 sanitize 白名单，用户数据不在内）
+
+    def setf(r, c, formula):
+        ws.cell(row=r, column=c, value=formula)
+        fset.add((ws.title, f'{L(c)}{r}'))
+
+    # ── 样式 ──
+    FN = '微软雅黑'
+    BLACK = '000000'
+    FILL_HDR, FILL_L1, FILL_CALC = (PatternFill('solid', fgColor=c)
+                                    for c in ('D9D9D9', 'F2F2F2', 'E7E6E6'))
+    thin, med = Side('thin', color=BLACK), Side('medium', color=BLACK)
+    B_GRID = Border(left=thin, right=thin, top=thin, bottom=thin)
+    B_TOP = Border(left=thin, right=thin, top=med, bottom=thin)
+    B_HDR = Border(left=thin, right=thin, top=med, bottom=med)
+    B_FINAL = Border(left=thin, right=thin, top=Side('double', color=BLACK), bottom=med)
+    AMT = '#,##0.00;-#,##0.00;"-"'
+    PCT = '0.0%;-0.0%;"-"'
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    tc = ws.cell(row=1, column=1, value=f'{bu} 经营情况表（{year}年）')
+    tc.font = Font(name=FN, size=14, bold=True, color=BLACK)
+    tc.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 26
+
+    heads = {1: '科目明细', 2: '合计', col_mom: '金额环比', col_note: '备注'}
+    heads.update({c: f'{m}月' for m, c in mcols.items()})
+    heads.update({c: f'{m}月费销比' for m, c in rcols.items()})
+    for c in range(1, ncols + 1):
+        cell = ws.cell(row=2, column=c, value=heads.get(c, ''))
+        cell.font = Font(name=FN, size=10.5, bold=True, color=BLACK)
+        cell.fill = FILL_HDR
+        cell.border = B_HDR
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws.row_dimensions[2].height = 30
+
+    def style_row(r, size, bold, fill=None, border=B_GRID, indent=0, height=None):
+        a = ws.cell(row=r, column=1)
+        a.font = Font(name=FN, size=size, bold=bold, color=BLACK)
+        a.border = border
+        a.alignment = Alignment(indent=indent, vertical='center')
+        if fill:
+            a.fill = fill
+        for c in range(2, ncols + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = Font(name=FN, size=size, bold=bold or c == 2, color=BLACK)
+            cell.border = border
+            if fill:
+                cell.fill = fill
+            if c in rcols.values():
+                cell.number_format = PCT
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            elif c == col_note:
+                cell.alignment = Alignment(horizontal='left', vertical='center')
+            else:
+                cell.number_format = AMT
+                cell.alignment = Alignment(horizontal='right', vertical='center')
+        if height:
+            ws.row_dimensions[r].height = height
+
+    def put_common(r):
+        """合计 = 各月相加（跳过费销比列）；环比 = 末月 − 上月（单月以 - 显示）。"""
+        setf(r, 2, '=' + '+'.join(f'{L(mcols[m])}{r}' for m in months))
+        if len(months) >= 2:
+            setf(r, col_mom, f'={L(mcols[months[-1]])}{r}-{L(mcols[months[-2]])}{r}')
+        else:
+            ws.cell(row=r, column=col_mom, value='-')
+
+    def put_ratios(r, denom_row):
+        for m, rc in rcols.items():
+            if denom_row:
+                mc = L(mcols[m])
+                setf(r, rc, f'=IF(N({mc}{denom_row})=0,"-",{mc}{r}/{mc}{denom_row})')
+            else:
+                ws.cell(row=r, column=rc, value='-')
+
+    row = 3
+    l1_row = {}          # 一级科目名 → 行号
+    rev_dept_row = {}    # l2k → 主营业务收入部门行（部门费销比分母）
+
+    for l1 in l1_cats:
+        is_exp = l1.name in _OP_EXPENSE_L1
+
+        if l1.is_calculated:
+            style_row(row, 11, True, fill=FILL_CALC, border=B_TOP, height=19)
+            ws.cell(row=row, column=1, value=l1.name)
+            refs = _OP_CALC_REFS.get(l1.name)
+            if refs and all(name in l1_row for _, name in refs):
+                for m in months:
+                    mc = L(mcols[m])
+                    parts = ''.join(('+' if s > 0 else '-') + f'{mc}{l1_row[name]}'
+                                    for s, name in refs).lstrip('+')
+                    setf(row, mcols[m], f'={parts}')
+            else:  # 未知计算科目兜底：直接写口径计算值
+                for m in months:
+                    nm, _ = _compute_l1_name_map(l1_cats, dict(raw_by_m.get(m, {})))
+                    ws.cell(row=row, column=mcols[m], value=round(nm.get(l1.name, 0), 2))
+            put_common(row)
+            put_ratios(row, None)
+            l1_row[l1.name] = row
+            row += 1
+            continue
+
+        # ── 一级科目 + 部门 + 明细 ──
+        l1_r = row
+        l1_row[l1.name] = l1_r
+        style_row(l1_r, 11, True, fill=FILL_L1, border=B_TOP, height=19)
+        ws.cell(row=l1_r, column=1, value=l1.name)
+        row += 1
+
+        l2ks = sorted({k[1] for k in l2_meta if k[0] == l1.id},
+                      key=lambda k: (k == '__none__', l2_meta[(l1.id, k)][1], l2_meta[(l1.id, k)][0]))
+        collapse = l2ks == ['__none__']   # 数据未分部门 → 明细直接挂一级科目下
+        child_rows = []
+        for l2k in l2ks:
+            dets = sorted([k for k in l3_meta if k[0] == l1.id and k[1] == l2k],
+                          key=lambda k: (l3_meta[k][1], l3_meta[k][0]))
+            orphan = leaf.get((l1.id, l2k, '__none__'), {})
+            if collapse:
+                dept_r = None
+            else:
+                dept_r = row
+                child_rows.append(dept_r)
+                style_row(dept_r, 10, False, indent=2)
+                ws.cell(row=dept_r, column=1, value=l2_meta[(l1.id, l2k)][0])
+                row += 1
+            det_rows = []
+            for key in dets:
+                dr = row
+                det_rows.append(dr)
+                style_row(dr, 9.5, False, indent=4 if not collapse else 2)
+                ws.cell(row=dr, column=1, value=l3_meta[key][0])
+                for m in months:
+                    ws.cell(row=dr, column=mcols[m], value=round(leaf[key].get(m, 0), 2))
+                put_common(dr)
+                put_ratios(dr, (rev_dept_row.get(l2k) or l1_row.get('主营业务收入')) if is_exp else None)
+                if collapse:
+                    child_rows.append(dr)
+                row += 1
+            # 有明细但存在未挂明细的余额 → 补一行，保证上级合计公式不丢数
+            if dets and any(abs(v) > 0.005 for v in orphan.values()):
+                dr = row
+                det_rows.append(dr)
+                style_row(dr, 9.5, False, indent=4 if not collapse else 2)
+                ws.cell(row=dr, column=1, value='（未分明细）')
+                for m in months:
+                    ws.cell(row=dr, column=mcols[m], value=round(orphan.get(m, 0), 2))
+                put_common(dr)
+                put_ratios(dr, (rev_dept_row.get(l2k) or l1_row.get('主营业务收入')) if is_exp else None)
+                if collapse:
+                    child_rows.append(dr)
+                row += 1
+            if dept_r is not None:
+                if det_rows:
+                    for m in months:
+                        mc = L(mcols[m])
+                        setf(dept_r, mcols[m], f'=SUM({mc}{det_rows[0]}:{mc}{det_rows[-1]})')
+                else:
+                    vals = defaultdict(float)
+                    for k3 in list(dets) + [(l1.id, l2k, '__none__')]:
+                        for m, v in leaf.get(k3, {}).items():
+                            vals[m] += v
+                    for m in months:
+                        ws.cell(row=dept_r, column=mcols[m], value=round(vals.get(m, 0), 2))
+                put_common(dept_r)
+                put_ratios(dept_r, rev_dept_row.get(l2k) if is_exp else None)
+                if l1.name == '主营业务收入':
+                    rev_dept_row[l2k] = dept_r
+
+        if child_rows:
+            for m in months:
+                mc = L(mcols[m])
+                setf(l1_r, mcols[m], '=' + '+'.join(f'{mc}{r_}' for r_ in child_rows))
+        else:  # 无任何下级行（含本期无发生）→ 直接写口径金额
+            for m in months:
+                ws.cell(row=l1_r, column=mcols[m],
+                        value=round(raw_by_m.get(m, {}).get(l1.id, 0), 2))
+        put_common(l1_r)
+        put_ratios(l1_r, l1_row.get('主营业务收入') if is_exp else None)
+
+    # ── 调增调减（财务手工填列；填入即联动实际经营情况） ──
+    style_row(row, 10, True, border=B_TOP, height=19)
+    ws.cell(row=row, column=1, value='调增调减明细')
+    row += 1
+    adj_rows = []
+    for label in ('调增：', '调增：', '调减：'):
+        style_row(row, 10, False, indent=2)
+        ws.cell(row=row, column=1, value=label)
+        put_common(row)
+        put_ratios(row, None)
+        adj_rows.append(row)
+        row += 1
+    adj_sum = row
+    style_row(adj_sum, 10.5, True, fill=FILL_L1, border=B_TOP, height=19)
+    ws.cell(row=adj_sum, column=1, value='调整合计')
+    for m in months:
+        mc = L(mcols[m])
+        setf(adj_sum, mcols[m], f'=SUM({mc}{adj_rows[0]}:{mc}{adj_rows[-1]})')
+    put_common(adj_sum)
+    put_ratios(adj_sum, None)
+    row += 1
+
+    final_r = row
+    style_row(final_r, 12, True, fill=FILL_CALC, border=B_FINAL, height=22)
+    ws.cell(row=final_r, column=1, value='实际经营情况')
+    np_r = l1_row.get('经营净利')
+    for m in months:
+        mc = L(mcols[m])
+        if np_r:
+            setf(final_r, mcols[m], f'={mc}{np_r}+{mc}{adj_sum}')
+        else:
+            setf(final_r, mcols[m], f'={mc}{adj_sum}')
+    put_common(final_r)
+    put_ratios(final_r, None)
+
+    # ── 外框加重：表格四周 medium 描边 ──
+    for r_ in range(2, final_r + 1):
+        for c_, side in ((1, 'left'), (ncols, 'right')):
+            cell = ws.cell(row=r_, column=c_)
+            b = cell.border
+            cell.border = Border(left=med if side == 'left' else b.left,
+                                 right=med if side == 'right' else b.right,
+                                 top=b.top, bottom=b.bottom)
+
+    # ── 列宽 / 冻结 / 打印 ──
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 17
+    for m in months:
+        ws.column_dimensions[L(mcols[m])].width = 14.5
+    for c in rcols.values():
+        ws.column_dimensions[L(c)].width = 10.5
+    ws.column_dimensions[L(col_mom)].width = 14.5
+    ws.column_dimensions[L(col_note)].width = 14
+    ws.freeze_panes = 'C3'
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.print_title_rows = '1:2'
+    return fset
+
+
+@cw_required()
+def report_operating_export(request):
+    """经营情况表导出：行 = 一级科目→部门→明细（逐级缩进），列 = 合计 + 各已发布月
+    （末两月各紧跟费销比列）+ 金额环比 + 备注；每事业部一个 Sheet（全年）；
+    底部为调增调减手工填列区与实际经营情况公式行。参数 year、bu（可选）。"""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    ctx, e = _report_scope(request)
+    if e:
+        return e
+    bu_list, bu_param, _level = ctx
+    if not _can_view(request, 'export'):
+        return err('无导出权限', 403, 403)
+    try:
+        year = int(request.GET.get('year', ''))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    try:
+        import openpyxl
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖')
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    safe_coords = set()
+
+    def _safe_title(s):
+        for ch in '[]:*?/\\':
+            s = s.replace(ch, '·')
+        return s[:31] or '报表'
+
+    for bu in bu_list:
+        months = sorted(ImportBatch.objects.filter(
+            business_unit=bu, year=year, status=ImportBatch.STATUS_PUBLISHED,
+            batch_type=ImportBatch.TYPE_DEPT
+        ).values_list('month', flat=True).distinct())
+        if not months:
+            continue
+        ws = wb.create_sheet(_safe_title(bu))
+        safe_coords |= _operating_sheet(ws, bu, year, months)
+
+    if not wb.worksheets:
+        wb.create_sheet('无数据')
+    bu_label = bu_param or '全部事业部'
+    return _build_excel_response(wb, f'经营情况表_{bu_label}_{year}年.xlsx',
+                                 safe_coords=safe_coords)
 
 
 # ── 指标管理 & 财务驾驶舱 ──────────────────────────────────────────────────────

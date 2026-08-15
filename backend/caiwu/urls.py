@@ -65,6 +65,7 @@ urlpatterns = [
     path('report/matrix', views.report_matrix),
     path('report/export', views.report_export),
     path('report/dept-pl-export', views.report_dept_pl_export),
+    path('report/operating-export', views.report_operating_export),
     path('report/ai-analysis', views.report_ai_analysis),
     path('report/ai-analysis/stream', views.report_ai_analysis_stream),
 

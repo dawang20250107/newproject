@@ -233,6 +233,59 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(gp[ci['乙部']], 200.0)
         self.assertEqual(gp[ci['合计']], 800.0)
 
+    def test_operating_export_hierarchy_ratios_and_adjustment_formulas(self):
+        # 经营情况表导出：一级科目→部门→明细逐级行；合计/汇总/费销比/环比/调整区均为公式
+        import io
+        import openpyxl
+        rev, sell = self.l1[REV], self.l1['销售费用']
+        d1 = L2Category.objects.create(business_unit=self.bu, name='一部', sort_order=1)
+        l3s = L3Category.objects.create(business_unit=self.bu, l1_category=sell,
+                                        name='差旅费', kingdee_code='6601.02', sort_order=1)
+        for month, rv, sv in ((4, 1000, 100), (5, 2000, 150)):
+            batch = ImportBatch.objects.create(
+                business_unit=self.bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d1, amount=Decimal(rv))
+            FinancialEntry.objects.create(batch=batch, l1=sell, l2=d1, l3=l3s, amount=Decimal(sv))
+
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': self.bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        ws = wb[self.bu]
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        # 费销比列紧跟对应月份列
+        self.assertEqual(heads, ['科目明细', '合计', '4月', '4月费销比', '5月', '5月费销比', '金额环比', '备注'])
+        rowmap = {}
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if label and label not in rowmap:
+                rowmap[label] = r
+        rr, sr = rowmap[REV], rowmap['销售费用']
+        dr, xr = rowmap['一部'], rowmap['差旅费']
+        # 汇总行/合计列是公式；叶子行是数值
+        self.assertEqual(ws.cell(row=rr, column=3).value, f'=C{dr}')          # 收入 L1 = 部门行
+        self.assertEqual(ws.cell(row=dr, column=3).value, 1000.0)             # 收入部门行 = 数值（无明细）
+        self.assertTrue(str(ws.cell(row=sr, column=2).value).startswith('=')) # 合计列公式
+        self.assertEqual(ws.cell(row=xr, column=5).value, 150.0)              # 明细叶子 = 数值
+        # 一级费销比引用收入一级行；部门费销比引用本部门收入行
+        self.assertIn(f'/C{rr}', str(ws.cell(row=sr, column=4).value))
+        sell_dept_r = None
+        for r in range(sr + 1, xr):
+            if (ws.cell(row=r, column=1).value or '').strip() == '一部':
+                sell_dept_r = r
+        self.assertIsNotNone(sell_dept_r)
+        self.assertIn(f'/C{dr}', str(ws.cell(row=sell_dept_r, column=4).value))
+        # 环比 = 5月 − 4月
+        self.assertEqual(ws.cell(row=sr, column=7).value, f'=E{sr}-C{sr}')
+        # 调整区：调整合计为 SUM 公式；实际经营情况 = 经营净利 + 调整合计
+        adj, fin, np_r = rowmap['调整合计'], rowmap['实际经营情况'], rowmap[NET_PROFIT]
+        self.assertTrue(str(ws.cell(row=adj, column=3).value).startswith('=SUM('))
+        self.assertEqual(ws.cell(row=fin, column=3).value, f'=C{np_r}+C{adj}')
+        # 备注列不带任何自动备注
+        self.assertTrue(all(ws.cell(row=r, column=8).value in (None, '')
+                            for r in range(3, ws.max_row + 1)))
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)
