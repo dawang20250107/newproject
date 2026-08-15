@@ -237,22 +237,29 @@ class CaiwuCalculationLogicTests(TestCase):
         # 经营情况表导出：一级科目→部门→明细逐级行；合计/汇总/费销比/环比/调整区均为公式
         import io
         import openpyxl
+        # 用事业部验证部门顺位（集团总部另有一套顺位表）
+        bu = '运输事业部'
         rev, sell = self.l1[REV], self.l1['销售费用']
-        d1 = L2Category.objects.create(business_unit=self.bu, name='一部', sort_order=1)
-        l3s = L3Category.objects.create(business_unit=self.bu, l1_category=sell,
+        d1 = L2Category.objects.create(business_unit=bu, name='一部', sort_order=1)
+        # 排序对抗样本：sort_order 故意与约定顺位相反，断言按 CFO 顺位而非导入顺序
+        d_cw = L2Category.objects.create(business_unit=bu, name='财务部', sort_order=2)
+        d_zj = L2Category.objects.create(business_unit=bu, name='总经办', sort_order=3)
+        l3s = L3Category.objects.create(business_unit=bu, l1_category=sell,
                                         name='差旅费', kingdee_code='6601.02', sort_order=1)
         for month, rv, sv in ((4, 1000, 100), (5, 2000, 150)):
             batch = ImportBatch.objects.create(
-                business_unit=self.bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
+                business_unit=bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
                 status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
                 file_name='t.xlsx')
             FinancialEntry.objects.create(batch=batch, l1=rev, l2=d1, amount=Decimal(rv))
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d_cw, amount=Decimal('10'))
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d_zj, amount=Decimal('20'))
             FinancialEntry.objects.create(batch=batch, l1=sell, l2=d1, l3=l3s, amount=Decimal(sv))
 
-        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': self.bu}, **self.auth())
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': bu}, **self.auth())
         self.assertEqual(resp.status_code, 200)
         wb = openpyxl.load_workbook(io.BytesIO(resp.content))
-        ws = wb[self.bu]
+        ws = wb[bu]
         heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
         # 费销比列紧跟对应月份列
         self.assertEqual(heads, ['科目明细', '合计', '4月', '4月费销比', '5月', '5月费销比', '金额环比', '备注'])
@@ -263,8 +270,14 @@ class CaiwuCalculationLogicTests(TestCase):
                 rowmap[label] = r
         rr, sr = rowmap[REV], rowmap['销售费用']
         dr, xr = rowmap['一部'], rowmap['差旅费']
+        # 部门按 CFO 约定顺位：总经办 > 财务部 > 其他（一部），与 sort_order 无关
+        self.assertLess(rowmap['总经办'], rowmap['财务部'])
+        self.assertLess(rowmap['财务部'], dr)
         # 汇总行/合计列是公式；叶子行是数值
-        self.assertEqual(ws.cell(row=rr, column=3).value, f'=C{dr}')          # 收入 L1 = 部门行
+        l1_formula = str(ws.cell(row=rr, column=3).value)
+        self.assertTrue(l1_formula.startswith('='))                           # 收入 L1 = 部门行之和
+        for d in (rowmap['总经办'], rowmap['财务部'], dr):
+            self.assertIn(f'C{d}', l1_formula)
         self.assertEqual(ws.cell(row=dr, column=3).value, 1000.0)             # 收入部门行 = 数值（无明细）
         self.assertTrue(str(ws.cell(row=sr, column=2).value).startswith('=')) # 合计列公式
         self.assertEqual(ws.cell(row=xr, column=5).value, 150.0)              # 明细叶子 = 数值

@@ -2795,6 +2795,23 @@ def report_dept_pl_export(request):
 
 # 费销比适用的一级科目（费销比＝当月成本或费用÷当月主营业务收入）：成本与费用都显示
 _OP_RATIO_L1 = {'主营业务成本', '税金成本', '销售费用', '管理费用', '财务费用', '集团管理费用'}
+
+# 部门显示顺位（CFO 约定）：集团总部与事业部各一套，未列入的部门排最后（按名称）。
+# 片区经营/项目经营 为模式匹配（如 武汉片区经营1部、项目经营3部），组内按名称自然排序。
+_OP_DEPT_ORDER_HQ = ['总裁办', '经管中心', '销售中心', '信息中心', '人资中心', '财务中心']
+_OP_DEPT_ORDER_BU = ['总经办', '经营规划部', '运营管理部', '片区经营', '项目经营',
+                     '资源拓展部', '综合部', '财务部']
+_OP_DEPT_PATTERNS = {'片区经营', '项目经营'}
+
+
+def _op_dept_rank(bu, name):
+    """经营情况表部门排序键：(顺位, 名称)。列表内精确命中或模式命中取顺位，其余排最后。"""
+    n = (name or '').strip()
+    order = _OP_DEPT_ORDER_HQ if bu == '集团总部' else _OP_DEPT_ORDER_BU
+    for i, key in enumerate(order):
+        if n == key or (key in _OP_DEPT_PATTERNS and key in n):
+            return (i, n)
+    return (len(order), n)
 # 计算行的 Excel 公式构成：名称 → [(符号, 引用一级科目名)]，与 _CALC_FORMULAS 同口径
 _OP_CALC_REFS = {
     '运营毛利': [(1, '主营业务收入'), (-1, '主营业务成本'), (-1, '税金成本')],
@@ -2966,8 +2983,9 @@ def _operating_sheet(ws, bu, year, months):
         ws.cell(row=l1_r, column=1, value=l1.name)
         row += 1
 
+        # 部门按 CFO 约定顺位排序（未列入的排最后，未分部门恒最后）
         l2ks = sorted({k[1] for k in l2_meta if k[0] == l1.id},
-                      key=lambda k: (k == '__none__', l2_meta[(l1.id, k)][1], l2_meta[(l1.id, k)][0]))
+                      key=lambda k: (k == '__none__',) + _op_dept_rank(bu, l2_meta[(l1.id, k)][0]))
         collapse = l2ks == ['__none__']   # 数据未分部门 → 明细直接挂一级科目下
         child_rows = []
         for l2k in l2ks:
