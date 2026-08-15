@@ -205,6 +205,46 @@ async function saveFieldValue(field, val) {
 }
 function setToday(field) { if (props.canWrite) saveFieldValue(field, todayCST()) }
 
+// ── 开票明细（多次开票；主表金额/税额/日期由明细派生，与编辑框同款管理器） ──
+const invEntries = computed(() => props.rec.invoice_entries || [])
+const invForm = reactive({ amount: '', tax: '', date: todayCST() })
+const invBusy = ref(false)
+// 从作战台等入口打开时行数据可能未带明细 → 兜底拉取
+onMounted(async () => {
+  if (props.rec.invoice_entries === undefined && !props.rec.invoice_batch_no) {
+    try {
+      const res = await ar.listInvoiceEntries(props.rec.id)
+      Object.assign(props.rec, res.data)
+    } catch { /* 无权限时静默，管理器按只读空态展示 */ }
+  }
+})
+async function addInvEntry() {
+  if (invBusy.value) return
+  if (!parseFloat(invForm.amount)) { toast.error('请填写开票金额（红字冲销填负数）'); return }
+  if (!invForm.date) { toast.error('请选择开票日期'); return }
+  invBusy.value = true
+  try {
+    const res = await ar.addInvoiceEntry(props.rec.id, {
+      amount: invForm.amount,
+      tax_amount: invForm.tax === '' ? null : invForm.tax,
+      invoice_date: invForm.date,
+    })
+    Object.assign(props.rec, res.data)
+    emit('field-saved', { id: props.rec.id, ...res.data })
+    Object.assign(invForm, { amount: '', tax: '', date: todayCST() })
+    toast.success('已登记开票')
+  } catch (e) { toast.error(errMsg(e)) } finally { invBusy.value = false }
+}
+async function delInvEntry(en) {
+  if (!(await confirmDlg(`删除第 ${en.entry_no} 次开票（¥${fmtAmt(en.amount)}）？主表开票金额/日期将自动回退`))) return
+  try {
+    const res = await ar.deleteInvoiceEntry(props.rec.id, en.id)
+    Object.assign(props.rec, res.data)
+    emit('field-saved', { id: props.rec.id, ...res.data })
+    toast.success('已删除')
+  } catch (e) { toast.error(errMsg(e)) }
+}
+
 // ── 回款 ─────────────────────────────────────────────────────────────────────
 const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.delivery_dept))
 // 回款方式（仅现金回款有意义）：现金/微信/银行转账/承兑汇票，默认银行转账
@@ -663,44 +703,63 @@ function onKey(e) {
                   <button v-if="canWrite" class="nd-skip-undo" @click="saveFieldValue('invoice_mode', null)">撤销跳过</button>
                 </div>
                 <template v-else>
-                  <div class="nd-fields nd-fields-2">
+                  <!-- 挂批次：三字段由批次开票逐次分摊驱动，此处只读 -->
+                  <div v-if="rec.invoice_batch_no" class="nd-fields nd-fields-2">
                     <div class="kf">
                       <span class="kf-lab">实际开票金额</span>
-                      <input v-if="editingField === 'actual_invoice_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" :placeholder="`预估 ${estimated}`"
-                        @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
-                      <span v-else class="kf-val" :class="{ empty: rec.actual_invoice_amount == null, ro: !canWrite }"
-                        @click="beginField('actual_invoice_amount', rec.actual_invoice_amount)">
-                        {{ rec.actual_invoice_amount != null ? '¥' + fmtAmt(rec.actual_invoice_amount) : (canWrite ? '＋ 填写' : '—') }}
-                      </span>
+                      <span class="kf-val ro">{{ rec.actual_invoice_amount != null ? '¥' + fmtAmt(rec.actual_invoice_amount) : '—' }}</span>
                     </div>
                     <div class="kf">
                       <span class="kf-lab">开票日期</span>
-                      <input v-if="editingField === 'invoice_date'" ref="fieldInp" v-model="fieldBuf" type="date" class="kf-inp"
-                        @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
-                      <span v-else class="kf-val" :class="{ empty: !rec.invoice_date, ro: !canWrite }" @click="beginField('invoice_date', rec.invoice_date)">
-                        {{ rec.invoice_date || (canWrite ? '＋ 选择' : '—') }}
-                      </span>
-                      <button v-if="canWrite && !rec.invoice_date && editingField !== 'invoice_date'" class="kf-today" @click="setToday('invoice_date')">今天</button>
+                      <span class="kf-val ro">{{ rec.invoice_date || '—' }}</span>
                     </div>
                     <div class="kf">
                       <span class="kf-lab">税额</span>
-                      <input v-if="editingField === 'tax_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" placeholder="0.00"
-                        @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
-                      <span v-else class="kf-val" :class="{ empty: rec.tax_amount == null, ro: !canWrite }" @click="beginField('tax_amount', rec.tax_amount)">
-                        {{ rec.tax_amount != null ? '¥' + fmtAmt(rec.tax_amount) : (canWrite ? '＋ 填写' : '—') }}
-                      </span>
+                      <span class="kf-val ro">{{ rec.tax_amount != null ? '¥' + fmtAmt(rec.tax_amount) : '—' }}</span>
                     </div>
                     <div class="kf">
                       <span class="kf-lab">开票批次号</span>
                       <input v-if="editingField === 'invoice_batch_no'" ref="fieldInp" v-model="fieldBuf" type="text" class="kf-inp" placeholder="批次号"
                         @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
-                      <span v-else class="kf-val" :class="{ empty: !rec.invoice_batch_no, ro: !canWrite }" @click="beginField('invoice_batch_no', rec.invoice_batch_no)">
-                        {{ rec.invoice_batch_no || (canWrite ? '＋ 关联批次' : '—') }}
+                      <span v-else class="kf-val" :class="{ ro: !canWrite }" @click="beginField('invoice_batch_no', rec.invoice_batch_no)">
+                        {{ rec.invoice_batch_no }}
                       </span>
                     </div>
                   </div>
-                  <div v-if="rec.invoice_batch_no" class="kf-batch-hint">🔗 已并入批次 <b>{{ rec.invoice_batch_no }}</b></div>
-                  <button v-if="canWrite" class="nd-skip-toggle" @click="saveFieldValue('invoice_mode', '不开票')">⏭ 标记为无需开票，跳过此步</button>
+                  <!-- 未挂批次：开票明细管理器（多次开票，主表金额/日期/税额自动派生） -->
+                  <template v-else>
+                    <div class="inv-sum">已开合计 <b>¥{{ fmtAmt(rec.actual_invoice_amount || 0) }}</b>
+                      <i>税额 {{ rec.tax_amount != null ? '¥' + fmtAmt(rec.tax_amount) : '—' }} · 首开日 {{ rec.invoice_date || '—' }}</i></div>
+                    <div v-if="invEntries.length" class="inv-list">
+                      <div v-for="en in invEntries" :key="en.id" class="inv-item">
+                        <b :class="parseFloat(en.amount) >= 0 ? 'inv-pos' : 'inv-neg'">¥{{ fmtAmt(en.amount) }}</b>
+                        <span class="inv-no">第{{ en.entry_no }}次<template v-if="en.tax_amount"> · 税 {{ en.tax_amount }}</template></span>
+                        <em v-if="en.invoice_date">{{ en.invoice_date }}</em>
+                        <em v-if="en.created_by_name">{{ en.created_by_name }}</em>
+                        <button v-if="canWrite" class="inv-del" title="删除该次开票" @click="delInvEntry(en)">✕</button>
+                      </div>
+                    </div>
+                    <div v-else class="inv-empty">未开票——每次开票一行，可多次登记，红字冲销填负数</div>
+                    <div v-if="canWrite" class="inv-add">
+                      <input v-model="invForm.amount" type="number" step="0.01" class="kf-inp" placeholder="开票金额（价税合计）" />
+                      <input v-model="invForm.tax" type="number" step="0.01" class="kf-inp" placeholder="税额（差额模式填）" title="差额模式逐笔手填；全额模式留空由税率自动计算" />
+                      <input v-model="invForm.date" type="date" class="kf-inp inv-date" title="本次开票日期；主表开票日期取首次开票日" />
+                      <button class="inv-add-btn" :disabled="invBusy" @click="addInvEntry">{{ invBusy ? '…' : '＋ 开票' }}</button>
+                    </div>
+                    <!-- 已有明细与批次互斥；未开票时保留关联批次入口 -->
+                    <div v-if="!invEntries.length" class="nd-fields nd-fields-2">
+                      <div class="kf">
+                        <span class="kf-lab">开票批次号</span>
+                        <input v-if="editingField === 'invoice_batch_no'" ref="fieldInp" v-model="fieldBuf" type="text" class="kf-inp" placeholder="批次号"
+                          @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                        <span v-else class="kf-val" :class="{ empty: !rec.invoice_batch_no, ro: !canWrite }" @click="beginField('invoice_batch_no', rec.invoice_batch_no)">
+                          {{ rec.invoice_batch_no || (canWrite ? '＋ 关联批次' : '—') }}
+                        </span>
+                      </div>
+                    </div>
+                  </template>
+                  <div v-if="rec.invoice_batch_no" class="kf-batch-hint">🔗 已并入批次 <b>{{ rec.invoice_batch_no }}</b>——开票请在批次开票中操作</div>
+                  <button v-if="canWrite && !invEntries.length && !rec.invoice_batch_no" class="nd-skip-toggle" @click="saveFieldValue('invoice_mode', '不开票')">⏭ 标记为无需开票，跳过此步</button>
                 </template>
                 <!-- 活动列表 -->
                 <ActThread v-if="!invoiceSkipped && actsByStage.invoice.length" :rec-id="rec.id" :acts="actsByStage.invoice"
@@ -1313,6 +1372,36 @@ function onKey(e) {
   border: 1px solid rgba(142,99,197,.15);
 }
 .kf-batch-hint b { font-weight: 800; }
+
+/* ── 开票明细管理器（多次开票，与编辑框同款派生口径） ── */
+.lc-detail > .inv-sum { margin: 8px 14px 0; padding: 0; font-size: 11.5px; color: #8a7361; font-weight: 600; }
+.inv-sum b { font-size: 13px; color: #4a3322; font-weight: 800; margin: 0 2px; }
+.inv-sum i { font-style: normal; color: #a8917e; font-weight: 500; margin-left: 6px; }
+.lc-detail > .inv-list { margin: 6px 14px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.inv-item {
+  display: flex; align-items: center; gap: 8px; font-size: 12px;
+  background: #faf7f3; border: 1.5px solid rgba(160,120,80,.14);
+  border-radius: 8px; padding: 5px 10px;
+}
+.inv-item b { font-weight: 800; }
+.inv-pos { color: #2e7d32; }
+.inv-neg { color: #c62828; }
+.inv-no { color: #8a7361; }
+.inv-item em { font-style: normal; font-size: 11px; color: #a8917e; }
+.inv-del { margin-left: auto; border: none; background: none; color: #c4b3a5; cursor: pointer; font-size: 12px; padding: 0 2px; border-radius: 5px; }
+.inv-del:hover { color: #c62828; background: rgba(198,40,40,.08); }
+.lc-detail > .inv-empty { margin: 6px 14px 0; padding: 0; font-size: 11.5px; color: #c4b3a5; }
+.lc-detail > .inv-add { margin: 6px 14px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.inv-add .kf-inp { flex: 1 1 150px; min-width: 150px; max-width: none; box-shadow: none; border-color: rgba(160,120,80,.28); }
+.inv-add .inv-date { flex: 0 1 140px; min-width: 130px; }
+.inv-add-btn {
+  border: 1.5px solid color-mix(in srgb, var(--ac, var(--primary)) 45%, transparent);
+  background: var(--row-bg); color: var(--ac, var(--primary));
+  font-size: 11.5px; font-weight: 700; padding: 4px 12px; border-radius: 7px; cursor: pointer;
+  transition: all .14s;
+}
+.inv-add-btn:hover { background: color-mix(in srgb, var(--ac, var(--primary)) 10%, transparent); }
+.inv-add-btn:disabled { opacity: .5; cursor: default; }
 
 /* ════════════════════════════════════════════════════
    ACTIVITY TIMELINE + 附件
