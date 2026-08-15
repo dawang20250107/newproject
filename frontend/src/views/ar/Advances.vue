@@ -78,6 +78,7 @@ const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q:
 // ── 实际收付时间预设（与日常收款同款交互）────────────────────────────────────
 const DATE_PRESETS = [
   { k: 'all', l: '全部' },
+  { k: 'today', l: '本日' }, { k: 'thisweek', l: '本周' },
   { k: 'thismonth', l: '本月' }, { k: 'lastmonth', l: '上月' },
   { k: 'thisquarter', l: '本季度' }, { k: 'lastquarter', l: '上季度' },
   { k: 'halfyear', l: '近半年' }, { k: 'thisyear', l: '本年' }, { k: 'lastyear', l: '去年' },
@@ -90,6 +91,14 @@ function computePreset(k) {
   const mk = (a, b) => ({ start: _ymd(a), end: _ymd(b) })
   switch (k) {
     case 'all': return { start: '', end: '' }
+    case 'today': return mk(t, t)
+    // 本周=周一~周日整周（含未来几天）：区间是完整自然周，而非周一到今天
+    case 'thisweek': {
+      const day = t.getDay()
+      const mon = new Date(t); mon.setDate(d - (day === 0 ? 6 : day - 1))
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+      return mk(mon, sun)
+    }
     case 'thismonth': return mk(new Date(y, m, 1), t)
     case 'lastmonth': return mk(new Date(y, m - 1, 1), new Date(y, m, 0))
     case 'thisquarter': return mk(new Date(y, Math.floor(m / 3) * 3, 1), t)
