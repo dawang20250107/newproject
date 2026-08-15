@@ -3427,6 +3427,7 @@ function clearFilters() {
                   <div class="adj-add">
                     <input v-model="invForm.amount" type="number" step="0.01" class="adj-amt-inp" placeholder="开票金额（价税合计）" />
                     <input v-model="invForm.tax" type="number" step="0.01" class="adj-amt-inp" placeholder="税额（差额模式填）" title="差额模式逐笔手填；全额模式留空由税率自动计算" />
+                    <i class="adj-break" aria-hidden="true"></i>
                     <input v-model="invForm.date" type="date" class="adj-date-inp" title="本次开票日期；主表开票日期取首次开票日" />
                     <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="invBusy" @click="addInvoiceEntry">
                       {{ invBusy ? '…' : '＋ 追加开票' }}
@@ -3462,7 +3463,9 @@ function clearFilters() {
                 </label>
               </template>
               <div v-else class="form-field span2 adj-box">
-                <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i></span>
+                <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i>
+                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button></span>
                 <div v-if="adjList.length" class="adj-list">
                   <div v-for="a in adjList" :key="a.id" class="adj-item">
                     <b :class="parseFloat(a.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(a.amount) >= 0 ? '+' : '' }}{{ a.amount }}</b>
@@ -3475,10 +3478,8 @@ function clearFilters() {
                 <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
                 <div class="adj-add">
                   <input v-model="adjForm.amount" type="number" step="0.01" class="adj-amt-inp"
-                         :placeholder="adjSuggest != null ? `按 = 填 ${adjSuggest.toFixed(2)}` : '金额（可负）'"
+                         :placeholder="adjSuggest != null ? `调整金额（按 = 填 ${adjSuggest.toFixed(2)}）` : '调整金额（可负）'"
                          @keydown="onAdjKeydown" />
-                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
-                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button>
                   <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
                   <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="adjBusy" @click="addAdjustment">
                     {{ adjBusy ? '…' : '＋ 追加调整' }}
@@ -3486,7 +3487,7 @@ function clearFilters() {
                   <!-- 原因独占整行、自动增高：长原因全程可见（用户反馈：单行窄框看不到写了什么） -->
                   <div class="adj-reason-wrap">
                     <textarea v-model="adjForm.reason" rows="1" maxlength="200" class="adj-reason-inp"
-                              placeholder="原因（必填，如：运费差/客户扣款/补付，写清来龙去脉便于日后追溯）"
+                              placeholder="原因（必填，如：运费差/客户扣款/补付）"
                               @input="autoGrowAdjReason"></textarea>
                     <span v-if="adjForm.reason.length >= 150" class="adj-reason-count"
                           :class="{ full: adjForm.reason.length >= 200 }">{{ adjForm.reason.length }}/200</span>
@@ -4464,7 +4465,9 @@ function clearFilters() {
 .adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
-.adj-add .adj-amt-inp { width: 120px; }
+/* 弹性宽度：占位提示（如「开票金额（价税合计）」）完整可见不截断 */
+.adj-add .adj-amt-inp { flex: 1 1 150px; min-width: 150px; }
+.adj-add .adj-break { flex-basis: 100%; height: 0; }
 .adj-add .adj-reason-wrap { position: relative; flex: 1 0 100%; }
 .adj-add .adj-reason-inp {
   width: 100%; resize: none; overflow-y: auto; line-height: 1.5;
