@@ -707,7 +707,7 @@ const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-  adjustment_reason: '',
+  adjustment_reason: '', adjustment_date: '',
   target_collection_date: '', invoice_batch_no: '', notes: '',
 })
 
@@ -1671,7 +1671,7 @@ function openCreate() {
     operation_date: todayCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-    adjustment_reason: '',
+    adjustment_reason: '', adjustment_date: '',
     target_collection_date: '', invoice_batch_no: '', notes: '',
   })
   adjList.value = []
@@ -1701,7 +1701,7 @@ function openEdit(rec) {
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
-    adjustment_reason: '',
+    adjustment_reason: '', adjustment_date: '',
     target_collection_date: rec.target_collection_date || '',
     invoice_batch_no: rec.invoice_batch_no || '',
     notes: rec.notes,
@@ -1909,6 +1909,7 @@ async function saveRec(andContinue = false) {
     if (!editRec.value) {
       payload.account_diff_adjustment = recForm.account_diff_adjustment || 0
       payload.adjustment_reason = recForm.adjustment_reason || ''
+      payload.adjust_date = recForm.adjustment_date || null
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -1919,7 +1920,7 @@ async function saveRec(andContinue = false) {
       Object.assign(recForm, {
         estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
         invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-        adjustment_reason: '', invoice_batch_no: '', notes: '',
+        adjustment_reason: '', adjustment_date: '', invoice_batch_no: '', notes: '',
       })
       toast.success(`已连续保存 ${contSaveCount} 条`)
       nextTick(() => estAmtInput.value?.focus())
@@ -3456,6 +3457,11 @@ function clearFilters() {
                          @keydown="onAdjKeydown" />
                 </label>
                 <label class="form-field">
+                  <span>调整日期</span>
+                  <input v-model="recForm.adjustment_date" type="date"
+                         title="决定该笔差额归入哪个月/周；留空默认随运作日期" />
+                </label>
+                <label class="form-field span2">
                   <span>差额原因</span>
                   <textarea v-model="recForm.adjustment_reason" rows="1" maxlength="200"
                             class="adj-reason-mini" placeholder="如：运费差/客户扣款/补付"

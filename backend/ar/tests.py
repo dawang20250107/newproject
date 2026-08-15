@@ -4033,6 +4033,26 @@ class AdjustmentAndCycleTests(TestCase):
         self.assertEqual(rec.account_diff_adjustment, Decimal('-50'))
         self.assertEqual(rec.outstanding_amount, Decimal('950'))
 
+    def test_create_record_with_diff_carries_adjust_date(self):
+        # 新建记录带初始差额：显式 adjust_date 落到明细；缺省回落运作日期
+        r = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-05-01',
+            'estimated_amount': '1000', 'account_diff_adjustment': '-30',
+            'adjustment_reason': '运费差', 'adjust_date': '2026-06-15'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        adj = ARAdjustment.objects.get(ar_record_id=r.json()['data']['id'])
+        self.assertEqual(adj.adjust_date, date(2026, 6, 15))
+
+        r2 = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-05-01',
+            'estimated_amount': '1000', 'account_diff_adjustment': '20',
+            'adjustment_reason': '补付'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 200, r2.content)
+        adj2 = ARAdjustment.objects.get(ar_record_id=r2.json()['data']['id'])
+        self.assertEqual(adj2.adjust_date, date(2026, 5, 1))   # 默认随运作日期
+
     def test_adjustment_requires_reason_and_nonzero(self):
         rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
                                       estimated_amount=Decimal('1000'))
