@@ -2066,7 +2066,7 @@ async function doBatchPay() {
 .ppd-add:hover { background: rgba(21,101,192,.06); }
 
 /* 预付核销弹窗 */
-.po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; }
+.po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; max-height: 200px; overflow-y: auto; }
 .po-hist-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 3px 0; }
 .po-hist-row b { color: var(--c-danger); font-variant-numeric: tabular-nums; margin-left: auto; }
 .po-reverse { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; }

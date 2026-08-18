@@ -714,6 +714,7 @@ const recForm = reactive({
 // ── 差额调整明细（编辑态管理器）─────────────────────────────────────────────
 // 一条应收可多次调整，各带原因与金额；合计与未收由后端派生，前端只管明细。
 const adjList = ref([])
+const adjListEl = ref(null)   // 管理器列表容器：新增后滚到新行
 const adjForm = reactive({ amount: '', reason: '', date: todayCST() })
 const adjBusy = ref(false)
 const adjTotal = computed(() =>
@@ -757,6 +758,7 @@ async function addAdjustment() {
       { amount: adjForm.amount, reason: adjForm.reason, adjust_date: adjForm.date })
     adjList.value = res.data.items
     adjForm.amount = ''; adjForm.reason = ''; adjForm.date = todayCST()
+    nextTick(() => adjListEl.value?.scrollTo({ top: adjListEl.value.scrollHeight }))
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
@@ -775,6 +777,7 @@ async function removeAdjustment(a) {
 // ── 开票明细（编辑态管理器）：一条应收可多次开票，各带金额/税额/日期 ────────────
 // 主表 实际开票额/税额/开票日期 为派生（Σ明细 / 首开日 / 差额Σ手填·全额自动）。
 const invList = ref([])
+const invListEl = ref(null)
 const invForm = reactive({ amount: '', tax: '', date: todayCST() })
 const invBusy = ref(false)
 const invTotal = computed(() =>
@@ -795,6 +798,7 @@ async function addInvoiceEntry() {
       { amount: invForm.amount, tax_amount: invForm.tax || null, invoice_date: invForm.date })
     _syncInvDerived(res.data)
     invForm.amount = ''; invForm.tax = ''; invForm.date = todayCST()
+    nextTick(() => invListEl.value?.scrollTo({ top: invListEl.value.scrollHeight }))
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { invBusy.value = false }
@@ -3415,7 +3419,7 @@ function clearFilters() {
                   该记录属于开票批次「{{ recForm.invoice_batch_no }}」——开票请在批次开票中操作（批次支持多次开票并逐次分摊到成员）
                 </div>
                 <template v-else>
-                  <div v-if="invList.length" class="adj-list">
+                  <div v-if="invList.length" ref="invListEl" class="adj-list">
                     <div v-for="en in invList" :key="en.id" class="adj-item">
                       <b :class="parseFloat(en.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(en.amount) >= 0 ? '' : '' }}{{ en.amount }}</b>
                       <span class="adj-reason">第{{ en.entry_no }}次<template v-if="en.tax_amount"> · 税 {{ en.tax_amount }}</template></span>
@@ -3472,7 +3476,7 @@ function clearFilters() {
                 <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i>
                   <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
                           @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button></span>
-                <div v-if="adjList.length" class="adj-list">
+                <div v-if="adjList.length" ref="adjListEl" class="adj-list">
                   <div v-for="a in adjList" :key="a.id" class="adj-item">
                     <b :class="parseFloat(a.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(a.amount) >= 0 ? '+' : '' }}{{ a.amount }}</b>
                     <span class="adj-reason" :title="a.reason">{{ a.reason || '未填原因' }}</span>
@@ -3626,7 +3630,7 @@ function clearFilters() {
             </div>
 
             <!-- 成员可开余额 -->
-            <table v-if="invDetail" class="bp-mtable" style="margin-top:12px">
+            <div class="bp-mwrap" style="margin-top:12px"><table v-if="invDetail" class="bp-mtable">
               <thead><tr><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th class="r">剩余可开</th><th class="r">税率</th><th class="r">税额</th></tr></thead>
               <tbody>
                 <tr v-for="m in invDetail.members" :key="m.id" :style="parseFloat(m.invoice_room) > 0 ? '' : 'opacity:.55'">
@@ -3638,7 +3642,7 @@ function clearFilters() {
                   <td class="r">{{ m.tax_amount != null ? fmtCell(m.tax_amount) : (m.invoice_mode === '差额' ? '手填' : '—') }}</td>
                 </tr>
               </tbody>
-            </table>
+            </table></div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showBatchInvoice = false">关闭</button>
@@ -4461,7 +4465,8 @@ function clearFilters() {
 
 /* ══ 差额调整明细管理器 ══ */
 .adj-box .adj-total { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
-.adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0;
+  max-height: 210px; overflow-y: auto; scroll-behavior: smooth; padding-right: 2px; }
 .adj-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(120,120,120,0.14); border-radius: 8px; background: rgba(255,255,255,0.6); font-size: 12.5px; }
 .adj-item b { font-variant-numeric: tabular-nums; min-width: 76px; }
 .adj-pos { color: var(--c-success); } .adj-neg { color: var(--c-danger); }
@@ -4525,6 +4530,7 @@ function clearFilters() {
 
 /* 批次开票事件 */
 .bi-events { margin-bottom: 10px; padding: 7px 10px; background: rgba(21,101,192,.04);
+  max-height: 190px; overflow-y: auto;
   border: 1px solid rgba(21,101,192,.18); border-radius: 8px; }
 .bi-events-head { font-size: 11.5px; font-weight: 700; color: var(--c-info); margin-bottom: 3px; }
 .bi-events-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
@@ -4595,6 +4601,8 @@ function clearFilters() {
 .bpc-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bpc-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
+.bp-mwrap { max-height: 260px; overflow-y: auto; border-radius: 8px; }
+.bp-mwrap .bp-mtable th { position: sticky; top: 0; z-index: 1; background: #eef4fb; }
 .bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
 .bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }

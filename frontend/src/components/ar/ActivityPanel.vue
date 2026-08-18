@@ -250,6 +250,7 @@ const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.deliver
 // 回款方式（仅现金回款有意义）：现金/微信/银行转账/承兑汇票，默认银行转账
 const PAY_METHODS = COLLECTION_METHODS
 const DRAFT_ST = DRAFT_STATUSES
+const payListEl = ref(null)   // 回款列表内滚容器：登记后滚到新行
 const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '', notes: '', overflow_to_advance: false })
 // b2: 现金回款金额超过未收余额（多收）
 const payOverflow = computed(() => payForm.source === '回款' && Number(payForm.amount) > outstanding.value + 0.005)
@@ -274,6 +275,7 @@ async function submitPayment() {
     await refreshRecordAndPayments()
     payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''; payForm.account = ''
     payForm.draft_status = DEFAULT_DRAFT_STATUS; payForm.overflow_to_advance = false
+    nextTick(() => payListEl.value?.scrollTo({ top: payListEl.value.scrollHeight }))
     if (outstanding.value <= 0) toast.success('🎉 本笔应收已全部收齐！')
     else toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) { toast.error(errMsg(e)) }
@@ -785,7 +787,7 @@ function onKey(e) {
                   <div class="pay-prog-txt"><span>已收 ¥{{ fmtAmt(paid) }}</span><button v-if="outstanding > 0" type="button" class="pay-fill-chip" title="点击填入未收余额" @click="payForm.amount = outstanding.toFixed(2)">待收 ¥{{ fmtAmt(outstanding) }} ↩</button><span v-else>待收 ¥0</span></div>
                 </div>
                 <!-- 明细 -->
-                <div v-if="payments.length" class="pay-list">
+                <div v-if="payments.length" ref="payListEl" class="pay-list">
                   <div v-for="p in payments" :key="p.id" class="pay-item">
                     <span class="pay-no">#{{ p.payment_no }}</span>
                     <span class="pay-amt">¥{{ fmtAmt(p.amount) }}</span>
@@ -1377,7 +1379,8 @@ function onKey(e) {
 .lc-detail > .inv-sum { margin: 8px 14px 0; padding: 0; font-size: 11.5px; color: #8a7361; font-weight: 600; }
 .inv-sum b { font-size: 13px; color: #4a3322; font-weight: 800; margin: 0 2px; }
 .inv-sum i { font-style: normal; color: #a8917e; font-weight: 500; margin-left: 6px; }
-.lc-detail > .inv-list { margin: 6px 14px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.lc-detail > .inv-list { margin: 6px 14px 0; padding: 0; display: flex; flex-direction: column; gap: 4px;
+  max-height: 220px; overflow-y: auto; scroll-behavior: smooth; }
 .inv-item {
   display: flex; align-items: center; gap: 8px; font-size: 12px;
   background: #faf7f3; border: 1.5px solid rgba(160,120,80,.14);
@@ -1434,7 +1437,8 @@ function onKey(e) {
 .pay-prog-txt { display: flex; justify-content: space-between; font-size: 11px; color: #9b8070; font-weight: 700; }
 .pay-fill-chip { border: 1px solid rgba(46,158,91,.4); background: rgba(46,158,91,.08); color: #1b5e20; font: inherit; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; cursor: pointer; transition: all .12s; }
 .pay-fill-chip:hover { background: rgba(46,158,91,.16); }
-.pay-list  { display: flex; flex-direction: column; gap: 5px; margin: 8px 14px 0; }
+.pay-list  { display: flex; flex-direction: column; gap: 5px; margin: 8px 14px 0;
+  max-height: 280px; overflow-y: auto; scroll-behavior: smooth; padding-right: 2px; }
 .pay-item  {
   display: flex; align-items: center; gap: 8px;
   background: var(--row-bg); border: 1px solid rgba(160,120,80,.15);
