@@ -32,6 +32,7 @@ from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
                        BatchInvoiceEvent,
                        CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, AdvanceInstallment,
+                       AdvanceTransfer,
                        Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
                        CashPoolConfig, CashPoolTransfer, DailyReceipt)

@@ -125,6 +125,10 @@ const ar = {
 
   // 预收预付 (advances)
   listAdvances: p => api.get('/ar/advances', { params: p }),
+  listAdvTransfers: id => api.get(`/ar/advances/${id}/transfers`),
+  addAdvTransfer: (id, d) => api.post(`/ar/advances/${id}/transfers`, d),
+  deleteAdvTransfer: (id, tid) => api.delete(`/ar/advances/${id}/transfers/${tid}`),
+  migrateAdvWriteoff: (id, wid, d) => api.post(`/ar/advances/${id}/writeoffs/${wid}/migrate`, d),
   advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),
   advancesSummary: p => api.get('/ar/advances/summary', { params: p }),
   advancesByCounterparty: p => api.get('/ar/advances/by-counterparty', { params: p }),

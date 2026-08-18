@@ -1990,5 +1990,226 @@ def advance_writeoff_detail(request, pk, wid):
 
 
 
+
+
+# ── 转移（往来单位间/项目间权益转移，非现金事件）──────────────────────────────
+
+def _transfer_gate(request, rec):
+    """转移通用闸：页面 + 部门 + 金额字段权限。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    return _ar_field_denied(request, 'adv_amount')
+
+
+def _transfers_payload(rec_id):
+    rec = AdvanceRecord.objects.select_related('project').get(pk=rec_id)
+    sel = ('from_advance', 'from_advance__project', 'to_advance', 'to_advance__project', 'created_by')
+    return {
+        'transfers_in': [t.to_dict() for t in rec.transfers_in.select_related(*sel)],
+        'transfers_out': [t.to_dict() for t in rec.transfers_out.select_related(*sel)],
+        'advance_amount': str(rec.advance_amount),
+        'transferred_in_amount': str(rec.transferred_in_amount),
+        'transferred_out_amount': str(rec.transferred_out_amount),
+        'written_off_amount': str(rec.written_off_amount),
+        'balance_amount': str(rec.balance_amount),
+        'writeoff_status': rec.writeoff_status,
+        'aging_base_date': str(rec.aging_base_date) if rec.aging_base_date else None,
+    }
+
+
+@csrf_exempt
+@pk_required()
+def advance_transfers(request, pk):
+    """GET/POST /advances/<pk>/transfers — 预收/预付转移。
+
+    转移是权益重分类、非现金事件：不产生收付明细，现金流/区间收付统计不变；
+    仅余额口径（recompute_derived）纳入转入/转出。目标侧账龄承袭源记录有效
+    账龄起点。跨事业部转移仅超级管理员。"""
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _transfer_gate(request, rec)
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok(_transfers_payload(rec.pk))
+
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    amount = _dec(data.get('amount', 0))
+    if amount <= 0:
+        return err('转移金额必须大于0')
+    tdate = _normalize_date(data.get('transfer_date'))
+    if not tdate:
+        return err('转移日期无效（格式 2026-01-20）')
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return err('请填写转移原因（如：合同主体变更/项目落位），以便日后追溯')
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            if amount > (src.balance_amount or Decimal('0')):
+                return err(f'转移金额 {amount:,.2f} 超过源记录未核销余额 '
+                           f'{(src.balance_amount or Decimal("0")):,.2f}')
+            to_id = data.get('to_advance_id')
+            new_target = None
+            if to_id:
+                try:
+                    target = AdvanceRecord.objects.select_for_update().get(pk=int(to_id))
+                except (AdvanceRecord.DoesNotExist, ValueError, TypeError):
+                    return err('目标记录不存在')
+                if target.pk == src.pk:
+                    return err('不能转移给记录自身')
+                if target.direction != src.direction:
+                    return err(f'方向不一致：{src.direction} 只能转移到同方向记录')
+                target_dept = target.delivery_dept
+            else:
+                nt = data.get('new_target') or {}
+                cp = (nt.get('counterparty') or '').strip()
+                if not cp:
+                    return err('新建目标需填写往来单位')
+                project = None
+                if nt.get('project_id'):
+                    project = ARProject.objects.filter(pk=nt['project_id']).first()
+                    if not project:
+                        return err('目标项目不存在')
+                target_dept = (project.delivery_dept if project
+                               else ((nt.get('delivery_dept') or '').strip() or src.delivery_dept))
+                new_target = (cp, project)
+            if target_dept != src.delivery_dept and request.pk_role != 'super_admin':
+                return err('跨事业部转移仅超级管理员可操作', 403, 403)
+            # 校验全部通过后才落库（return 不回滚事务，写入必须在所有校验之后）
+            if new_target is not None:
+                cp, project = new_target
+                target = AdvanceRecord(
+                    direction=src.direction, counterparty=cp, project=project,
+                    delivery_dept=target_dept,
+                    occur_year=src.occur_year, occur_month=src.occur_month,
+                    occur_date=None, advance_amount=Decimal('0'),
+                    expected_writeoff_date=src.expected_writeoff_date,
+                    notes=f'由转移新建（源：{src.counterparty}）', created_by=user)
+                target.save()
+            AdvanceTransfer.objects.create(
+                from_advance=src, to_advance=target, amount=amount,
+                transfer_date=tdate, reason=reason[:200], created_by=user)
+            src.recompute_derived()
+            target.recompute_derived()
+            target.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({**_transfers_payload(pk), 'target_id': target.pk})
+
+
+@csrf_exempt
+@pk_required()
+def advance_transfer_detail(request, pk, tid):
+    """DELETE /advances/<pk>/transfers/<tid> — 撤销转移（源/目标任一侧可发起）。
+
+    守卫：撤销后目标余额不得为负（目标已核销/再转出转入款项时拒绝，提示先处理）。
+    跨事业部单据仅超级管理员可撤销（与创建同权）。"""
+    try:
+        t = AdvanceTransfer.objects.select_related('from_advance', 'to_advance').get(pk=tid)
+    except AdvanceTransfer.DoesNotExist:
+        return err('转移记录不存在', 404)
+    if pk not in (t.from_advance_id, t.to_advance_id):
+        return err('转移记录不存在', 404)
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    gate_rec = t.from_advance if pk == t.from_advance_id else t.to_advance
+    denied = _transfer_gate(request, gate_rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    if (t.from_advance.delivery_dept != t.to_advance.delivery_dept
+            and request.pk_role != 'super_admin'):
+        return err('跨事业部转移仅超级管理员可撤销', 403, 403)
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=t.from_advance_id)
+            tgt = AdvanceRecord.objects.select_for_update().get(pk=t.to_advance_id)
+            if (tgt.balance_amount or Decimal('0')) < (t.amount or Decimal('0')):
+                return err(f'撤销后目标记录余额将为负（目标已使用转入款项 '
+                           f'{(t.amount or Decimal("0")):,.2f}）。请先处理目标侧的核销或转移，再撤销本单')
+            t.delete()
+            src.recompute_derived()
+            tgt.recompute_derived()
+            tgt.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok(_transfers_payload(pk))
+
+
+@csrf_exempt
+@pk_required()
+def advance_writeoff_migrate(request, pk, wid):
+    """POST /advances/<pk>/writeoffs/<wid>/migrate {to_advance_id} — 核销记录迁移。
+
+    核销挂错记录的更正通道：仅限「纯登记核销」（未关联预收抵扣回款/排款）；
+    关联型核销须先撤销关联再按正常流程处理。目标余额须足以承接该笔核销。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        wo = AdvanceWriteoff.objects.select_related('advance_record').get(
+            pk=wid, advance_record_id=pk)
+    except AdvanceWriteoff.DoesNotExist:
+        return err('核销记录不存在', 404)
+    src_rec = wo.advance_record
+    denied = _transfer_gate(request, src_rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    if wo.ar_record_id or wo.ar_payment_id or wo.payment_id:
+        return err('该核销已关联预收抵扣回款/排款，不能直接迁移：'
+                   '请先删除该核销解除关联，将余额转移到目标记录后重新核销')
+    data = _parse_body(request)
+    try:
+        to_id = int(data.get('to_advance_id'))
+    except (TypeError, ValueError):
+        return err('目标记录无效')
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            try:
+                tgt = AdvanceRecord.objects.select_for_update().get(pk=to_id)
+            except AdvanceRecord.DoesNotExist:
+                return err('目标记录不存在')
+            if tgt.pk == src.pk:
+                return err('目标不能是当前记录')
+            if tgt.direction != src.direction:
+                return err(f'方向不一致：{src.direction} 核销只能迁移到同方向记录')
+            if (tgt.delivery_dept != src.delivery_dept
+                    and request.pk_role != 'super_admin'):
+                return err('跨事业部迁移仅超级管理员可操作', 403, 403)
+            if (tgt.balance_amount or Decimal('0')) < (wo.amount or Decimal('0')):
+                return err(f'目标记录未核销余额 {(tgt.balance_amount or Decimal("0")):,.2f} '
+                           f'不足以承接该笔核销 {(wo.amount or Decimal("0")):,.2f}')
+            next_no = (tgt.writeoffs.aggregate(m=Max("writeoff_no"))["m"] or 0) + 1
+            note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+            wo.advance_record = tgt
+            wo.writeoff_no = next_no
+            if note_tag not in (wo.notes or ''):
+                wo.notes = ((wo.notes or '') + note_tag).strip()
+            wo.save()
+            src.recompute_derived()
+            tgt.recompute_derived()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({'moved': True, 'from': _transfers_payload(pk), 'to': _transfers_payload(to_id)})
+
 # 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。
 __all__ = [n for n in dir() if not n.startswith('__')]

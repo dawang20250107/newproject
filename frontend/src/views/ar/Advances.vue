@@ -611,6 +611,7 @@ async function openInstallments(rec) {
   Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
   instList.value = []
   showInstModal.value = true
+  loadTransfers()
   try {
     const res = await ar.listAdvInstallments(rec.id)
     instList.value = res.data.items
@@ -655,6 +656,143 @@ async function saveInstAdd(stay = false) {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { instBusy.value = false }
 }
+// ── 转移（单位间/项目间权益转移，非现金事件；跨事业部仅超管）────────────────
+const canTransferAction = computed(() => auth.canAction('adv_transfer'))
+const showTransfer = ref(false)
+const transferBusy = ref(false)
+const transferList = reactive({ tin: [], tout: [] })
+const transferForm = reactive({
+  amount: '', date: todayCST(), reason: '', mode: 'existing',
+  to_advance_id: '', target_label: '', target_kw: '',
+  new_counterparty: '', new_project_id: '', new_project_kw: '',
+})
+const targetOpts = ref([])
+const targetProjOpts = ref([])
+const transferAmtInput = ref(null)
+
+async function loadTransfers() {
+  if (!instRec.value) return
+  try {
+    const res = await ar.listAdvTransfers(instRec.value.id)
+    transferList.tin = res.data.transfers_in || []
+    transferList.tout = res.data.transfers_out || []
+  } catch { transferList.tin = []; transferList.tout = [] }
+}
+function openTransfer() {
+  Object.assign(transferForm, {
+    amount: '', date: todayCST(), reason: '', mode: 'existing',
+    to_advance_id: '', target_label: '', target_kw: '',
+    new_counterparty: '', new_project_id: '', new_project_kw: '',
+  })
+  targetOpts.value = []; targetProjOpts.value = []
+  showTransfer.value = true
+  searchTargets('')
+  nextTick(() => transferAmtInput.value?.focus())
+}
+let targetTimer = null
+async function searchTargets(kw) {
+  try {
+    const res = await ar.listAdvances({ direction: direction.value, q: kw || undefined, size: 8 })
+    targetOpts.value = (res.data.items || []).filter(r => r.id !== instRec.value?.id)
+  } catch { targetOpts.value = [] }
+}
+function onTargetKw() {
+  transferForm.to_advance_id = ''; transferForm.target_label = ''
+  clearTimeout(targetTimer)
+  targetTimer = setTimeout(() => searchTargets(transferForm.target_kw.trim()), 220)
+}
+function pickTarget(r) {
+  transferForm.to_advance_id = r.id
+  transferForm.target_label = `${r.counterparty || '—'}${r.short_name ? '·' + r.short_name : ''}（余额 ${fmtAmt(r.balance_amount)}）`
+  transferForm.target_kw = ''
+  targetOpts.value = []
+}
+let tpTimer = null
+async function searchTargetProjects(kw) {
+  try {
+    const res = await ar.listProjects({ size: 8, q: kw || undefined })
+    targetProjOpts.value = res.data.items || []
+  } catch { targetProjOpts.value = [] }
+}
+function onTargetProjKw() {
+  transferForm.new_project_id = ''
+  clearTimeout(tpTimer)
+  tpTimer = setTimeout(() => searchTargetProjects(transferForm.new_project_kw.trim()), 220)
+}
+function pickTargetProject(pr) {
+  transferForm.new_project_id = pr.id
+  transferForm.new_project_kw = `${pr.short_name}（${pr.delivery_dept}）`
+  targetProjOpts.value = []
+}
+async function submitTransfer() {
+  if (transferBusy.value) return
+  if (!(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
+  if (!transferForm.date) { toast.error('请选择转移日期'); return }
+  if (!transferForm.reason.trim()) { toast.error('请填写转移原因（如：合同主体变更/项目落位），以便追溯'); return }
+  const body = { amount: transferForm.amount, transfer_date: transferForm.date, reason: transferForm.reason }
+  if (transferForm.mode === 'existing') {
+    if (!transferForm.to_advance_id) { toast.error('请选择目标记录'); return }
+    body.to_advance_id = transferForm.to_advance_id
+  } else {
+    if (!transferForm.new_counterparty.trim()) { toast.error('请填写目标往来单位'); return }
+    body.new_target = { counterparty: transferForm.new_counterparty.trim() }
+    if (transferForm.new_project_id) body.new_target.project_id = transferForm.new_project_id
+  }
+  transferBusy.value = true
+  try {
+    await ar.addAdvTransfer(instRec.value.id, body)
+    toast.success('已转移')
+    showTransfer.value = false
+    await loadTransfers()
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { transferBusy.value = false }
+}
+async function undoTransfer(t) {
+  if (!(await confirmDlg(`撤销转移「${t.from.counterparty} → ${t.to.counterparty}：${fmtAmt(t.amount)}」？双方余额将复原。`))) return
+  try {
+    await ar.deleteAdvTransfer(instRec.value.id, t.id)
+    toast.success('已撤销')
+    await loadTransfers()
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+}
+// 核销迁移（核销挂错记录的更正；仅纯登记核销）
+const migrateWo = ref(null)
+const migrateKw = ref('')
+const migrateOpts = ref([])
+let migrateTimer = null
+function openMigrate(w) {
+  migrateWo.value = w
+  migrateKw.value = ''
+  migrateOpts.value = []
+  searchMigrateTargets('')
+}
+async function searchMigrateTargets(kw) {
+  try {
+    const res = await ar.listAdvances({ direction: direction.value, q: kw || undefined, size: 8 })
+    migrateOpts.value = (res.data.items || []).filter(r => r.id !== woRec.value?.id)
+  } catch { migrateOpts.value = [] }
+}
+function onMigrateKw() { clearTimeout(migrateTimer); migrateTimer = setTimeout(() => searchMigrateTargets(migrateKw.value.trim()), 220) }
+async function doMigrate(target) {
+  if (!(await confirmDlg(`将第${migrateWo.value.writeoff_no}笔核销（${fmtAmt(migrateWo.value.amount)}）迁移到「${target.counterparty || '—'}${target.short_name ? '·' + target.short_name : ''}」？`))) return
+  try {
+    await ar.migrateAdvWriteoff(woRec.value.id, migrateWo.value.id, { to_advance_id: target.id })
+    toast.success('已迁移')
+    migrateWo.value = null
+    const res = await ar.listWriteoffs(woRec.value.id)
+    woList.value = res.data.items
+    await load()
+    const fresh = items.value.find(r => r.id === woRec.value.id)
+    if (fresh) woRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+}
+
 async function delInstallment(i) {
   if (!(await confirmDlg(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`))) return
   instBusy.value = true
@@ -928,6 +1066,8 @@ useModalEsc(
   [() => showProjList.value, () => (showProjList.value = false)],
   [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
   [() => showInstAdd.value, () => (showInstAdd.value = false)],
+  [() => showTransfer.value, () => (showTransfer.value = false)],
+  [() => !!migrateWo.value, () => (migrateWo.value = null)],
 )
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
 useModalEnter(() => showModal.value, () => save())
@@ -1394,7 +1534,11 @@ onMounted(async () => {
                 <span v-else>—</span>
               </td>
               <td>{{ w.notes || '—' }}</td>
-              <td v-if="canDelete || canWoAction"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
+              <td v-if="canDelete || canWoAction">
+                <button v-if="!w.ar_record_id && !w.payment_id && (canCreate || canTransferAction)"
+                        class="lnk" title="核销挂错记录时迁移到另一条同方向记录" @click="openMigrate(w)">迁移</button>
+                <button class="lnk danger" @click="delWriteoff(w)">删除</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -1424,6 +1568,27 @@ onMounted(async () => {
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
         </div>
+
+        <!-- 核销迁移：选择目标记录 -->
+        <div v-if="migrateWo" class="inst-add-mask" @click.self="migrateWo = null">
+          <div class="inst-add-card tr-card">
+            <h4>迁移核销<span class="ia-sub">第{{ migrateWo.writeoff_no }}笔 · {{ fmtAmt(migrateWo.amount) }}</span></h4>
+            <div class="ia-fld">
+              <span>迁移到（同方向、余额须足以承接）</span>
+              <input v-model="migrateKw" class="inp" placeholder="搜索往来单位 / 项目…" @input="onMigrateKw" />
+              <div v-if="migrateOpts.length" class="tr-opts">
+                <div v-for="r in migrateOpts" :key="r.id" class="tr-opt" @click="doMigrate(r)">
+                  <b>{{ r.counterparty || '—' }}</b><span v-if="r.short_name">·{{ r.short_name }}</span>
+                  <i>{{ r.delivery_dept }}</i><em>余额 {{ fmtAmt(r.balance_amount) }}</em>
+                </div>
+              </div>
+            </div>
+            <p class="ia-hint">仅纯登记核销可迁移；已关联预收抵扣回款/排款的须先撤销关联</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="migrateWo = null">取消</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1432,12 +1597,18 @@ onMounted(async () => {
       <div class="modal inst-modal">
         <div class="inst-head">
           <h3>收付明细 · {{ instRec.counterparty }}</h3>
-          <button v-if="canCreate || canInstAction" class="btn btn-primary btn-sm" @click="openInstAdd">＋ 新增{{ dirLabel }}</button>
+          <div class="inst-head-btns">
+            <button v-if="canCreate || canTransferAction" class="btn btn-ghost btn-sm"
+                    title="往来单位间/项目间权益转移（非现金，不产生收付流水）" @click="openTransfer">⇄ 转移</button>
+            <button v-if="canCreate || canInstAction" class="btn btn-primary btn-sm" @click="openInstAdd">＋ 新增{{ dirLabel }}</button>
+          </div>
         </div>
         <div class="wo-summary">
           <span>{{ dirLabel }}总额 <b>{{ fmtAmt(instRec.advance_amount) }}</b><i style="font-style:normal;font-size:11px;color:var(--muted)">（=明细之和）</i></span>
           <span>已核销 <b>{{ fmtAmt(instRec.written_off_amount) }}</b></span>
           <span class="hl">未核销余额 <b>{{ fmtAmt(instRec.balance_amount) }}</b></span>
+          <span v-if="parseFloat(instRec.transferred_in_amount)" class="tr-chip tr-chip-in">转入 {{ fmtAmt(instRec.transferred_in_amount) }}</span>
+          <span v-if="parseFloat(instRec.transferred_out_amount)" class="tr-chip tr-chip-out">转出 {{ fmtAmt(instRec.transferred_out_amount) }}</span>
         </div>
         <div ref="instListBody" class="inst-scroll">
           <table class="data-table compact">
@@ -1454,11 +1625,84 @@ onMounted(async () => {
             </tbody>
           </table>
         </div>
+        <div v-if="transferList.tout.length || transferList.tin.length" class="tr-sec">
+          <div class="tr-sec-head">转移记录<i>权益重分类，非现金，不计入收付流水</i></div>
+          <div v-for="t in transferList.tout" :key="'o' + t.id" class="tr-item">
+            <b class="tr-amt-out">−{{ fmtAmt(t.amount) }}</b>
+            <span>→ {{ t.to.counterparty || '—' }}<template v-if="t.to.short_name">·{{ t.to.short_name }}</template><template v-if="t.to.delivery_dept !== instRec.delivery_dept">（{{ t.to.delivery_dept }}）</template></span>
+            <em>{{ t.transfer_date }}</em>
+            <span class="tr-reason" :title="t.reason">{{ t.reason }}</span>
+            <button v-if="canCreate || canTransferAction" class="lnk danger" @click="undoTransfer(t)">撤销</button>
+          </div>
+          <div v-for="t in transferList.tin" :key="'i' + t.id" class="tr-item">
+            <b class="tr-amt-in">+{{ fmtAmt(t.amount) }}</b>
+            <span>← {{ t.from.counterparty || '—' }}<template v-if="t.from.short_name">·{{ t.from.short_name }}</template><template v-if="t.from.delivery_dept !== instRec.delivery_dept">（{{ t.from.delivery_dept }}）</template></span>
+            <em>{{ t.transfer_date }}</em>
+            <span class="tr-reason" :title="t.reason">{{ t.reason }}</span>
+            <button v-if="canCreate || canTransferAction" class="lnk danger" @click="undoTransfer(t)">撤销</button>
+          </div>
+        </div>
         <p class="inst-note">
           与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
         </p>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showInstModal = false">关闭</button>
+        </div>
+
+        <!-- 转移卡片：固定居中浮层，Esc 关闭 -->
+        <div v-if="showTransfer" class="inst-add-mask" @click.self="() => { if (!transferForm.amount && !transferForm.reason) showTransfer = false }">
+          <div class="inst-add-card tr-card">
+            <h4>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
+            <label class="ia-fld">
+              <span>转移金额 <em>*</em>
+                <button type="button" class="wo-fill-chip" style="margin-left:6px"
+                        @click="transferForm.amount = Number(instRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(instRec.balance_amount) }}</button>
+              </span>
+              <input ref="transferAmtInput" v-model="transferForm.amount" type="number" step="0.01" class="inp" placeholder="≤ 未核销余额" />
+            </label>
+            <label class="ia-fld">
+              <span>转移日期 <em>*</em></span>
+              <input v-model="transferForm.date" type="date" class="inp" />
+            </label>
+            <label class="ia-fld">
+              <span>转移原因 <em>*</em></span>
+              <input v-model="transferForm.reason" class="inp" maxlength="200" placeholder="如：合同主体变更 / 预收落位到项目" />
+            </label>
+            <div class="ia-fld">
+              <span>转移到 <em>*</em></span>
+              <div class="tr-mode">
+                <label :class="{ active: transferForm.mode === 'existing' }"><input v-model="transferForm.mode" type="radio" value="existing" />已有记录</label>
+                <label :class="{ active: transferForm.mode === 'new' }"><input v-model="transferForm.mode" type="radio" value="new" />新建记录</label>
+              </div>
+              <template v-if="transferForm.mode === 'existing'">
+                <div v-if="transferForm.target_label" class="tr-picked">{{ transferForm.target_label }}
+                  <button type="button" class="lnk" @click="transferForm.to_advance_id = ''; transferForm.target_label = ''; searchTargets('')">重选</button></div>
+                <template v-else>
+                  <input v-model="transferForm.target_kw" class="inp" placeholder="搜索往来单位 / 项目…" @input="onTargetKw" />
+                  <div v-if="targetOpts.length" class="tr-opts">
+                    <div v-for="r in targetOpts" :key="r.id" class="tr-opt" @click="pickTarget(r)">
+                      <b>{{ r.counterparty || '—' }}</b><span v-if="r.short_name">·{{ r.short_name }}</span>
+                      <i>{{ r.delivery_dept }}</i><em>余额 {{ fmtAmt(r.balance_amount) }}</em>
+                    </div>
+                  </div>
+                </template>
+              </template>
+              <template v-else>
+                <input v-model="transferForm.new_counterparty" class="inp" style="margin-bottom:6px" placeholder="目标往来单位（必填）" />
+                <input v-model="transferForm.new_project_kw" class="inp" placeholder="关联项目（选填，搜索项目简称）" @input="onTargetProjKw" />
+                <div v-if="targetProjOpts.length && !transferForm.new_project_id" class="tr-opts">
+                  <div v-for="pr in targetProjOpts" :key="pr.id" class="tr-opt" @click="pickTargetProject(pr)">
+                    <b>{{ pr.short_name }}</b><i>{{ pr.delivery_dept }}</i><span>{{ pr.customer_name }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <p class="ia-hint">转移是权益重分类：不产生现金流水，账龄承袭原记录；跨事业部转移仅超级管理员</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="showTransfer = false">取消</button>
+              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : '确认转移' }}</button>
+            </div>
+          </div>
         </div>
 
         <!-- 新增收付卡片：固定居中浮层，Esc 关卡片、Enter 保存 -->
@@ -1766,6 +2010,31 @@ onMounted(async () => {
 .ia-fld .inp { width: 100%; }
 .ia-hint { font-size: 11px; color: var(--muted); margin: 2px 0 12px; }
 .ia-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ── 转移 ── */
+.inst-head-btns { display: flex; gap: 8px; flex-shrink: 0; margin-bottom: 8px; }
+.tr-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 700; }
+.tr-chip-in { background: rgba(27,110,53,0.1); color: #1b6e35; }
+.tr-chip-out { background: rgba(198,40,40,0.08); color: #c62828; }
+.tr-sec { margin-top: 10px; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px; max-height: 150px; overflow-y: auto; }
+.tr-sec-head { font-size: 11.5px; font-weight: 700; color: var(--muted); margin-bottom: 5px; }
+.tr-sec-head i { font-style: normal; font-weight: 400; font-size: 10.5px; margin-left: 8px; }
+.tr-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.tr-amt-out { color: #c62828; font-weight: 800; }
+.tr-amt-in { color: #1b6e35; font-weight: 800; }
+.tr-item em { font-style: normal; font-size: 11px; color: var(--muted); }
+.tr-reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.tr-card { width: 420px; }
+.tr-mode { display: flex; gap: 8px; margin-bottom: 8px; }
+.tr-mode label { display: flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 12px; border: 1.5px solid var(--border); border-radius: 8px; cursor: pointer; }
+.tr-mode label.active { border-color: var(--primary); color: var(--primary); font-weight: 700; background: rgba(201,99,66,0.05); }
+.tr-opts { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; max-height: 170px; overflow-y: auto; }
+.tr-opt { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.tr-opt:hover { background: rgba(201,99,66,0.06); }
+.tr-opt b { font-weight: 700; }
+.tr-opt i { font-style: normal; font-size: 11px; color: var(--muted); }
+.tr-opt em { font-style: normal; font-size: 11px; color: var(--primary); margin-left: auto; white-space: nowrap; }
+.tr-picked { font-size: 12.5px; font-weight: 600; padding: 6px 10px; background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.25); border-radius: 8px; display: flex; align-items: center; gap: 8px; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 

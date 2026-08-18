@@ -213,6 +213,7 @@ ACTION_DEFS = [
     {'key': 'wo_receive',      'label': '预收核销（冲抵应收/批量/撤销）'},
     {'key': 'ar_collect',      'label': '应收回款录入（单笔/批次分摊）'},
     {'key': 'adv_installment', 'label': '预收预付收付登记（多次到账/付出）'},
+    {'key': 'adv_transfer',    'label': '预收预付转移（单位间/项目间，含核销迁移）'},
 ]
 ACTION_KEYS = [a['key'] for a in ACTION_DEFS]
 
