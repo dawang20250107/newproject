@@ -616,8 +616,24 @@ async function openInstallments(rec) {
     instList.value = res.data.items
   } catch (_) { instList.value = [] }
 }
-async function addInstallment() {
+// 新增收付卡片：长列表时底部表单要拉很久 → 右上角按钮弹出固定居中卡片。
+// Esc/取消 关卡片；Enter=保存；「保存并继续」连录多笔不关卡片；遮罩仅在未填写时可点关。
+const showInstAdd = ref(false)
+const instAmtInput = ref(null)
+const instListBody = ref(null)
+const lastInstId = ref(null)
+function openInstAdd() {
+  Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
+  showInstAdd.value = true
+  nextTick(() => instAmtInput.value?.focus())
+}
+function instAddMaskClick() {
+  if (!String(instForm.amount).trim() && !instForm.notes.trim()) showInstAdd.value = false
+}
+async function saveInstAdd(stay = false) {
+  if (instBusy.value) return
   if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为0（可负=退回）'); return }
+  if (!instForm.occur_date) { toast.error('请选择收付日期'); return }
   instBusy.value = true
   try {
     const res = await ar.addAdvInstallment(instRec.value.id, { ...instForm })
@@ -626,6 +642,16 @@ async function addInstallment() {
     await load()
     const fresh = items.value.find(r => r.id === instRec.value.id)
     if (fresh) instRec.value = fresh
+    // 新行高亮并滚入视野（列表内滚动，不动弹窗）
+    const added = instList.value[instList.value.length - 1]
+    lastInstId.value = added?.id ?? null
+    nextTick(() => {
+      const el = instListBody.value
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
+    toast.success(`已登记第 ${added?.install_no ?? instList.value.length} 笔`)
+    if (stay) nextTick(() => instAmtInput.value?.focus())
+    else showInstAdd.value = false
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { instBusy.value = false }
 }
@@ -901,6 +927,7 @@ useModalEsc(
   [() => showSupplierModal.value, () => (showSupplierModal.value = false)],
   [() => showProjList.value, () => (showProjList.value = false)],
   [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
+  [() => showInstAdd.value, () => (showInstAdd.value = false)],
 )
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
 useModalEnter(() => showModal.value, () => save())
@@ -1340,13 +1367,14 @@ onMounted(async () => {
 
     <!-- ── writeoff modal ── -->
     <div v-if="showWoModal" class="modal-mask" @click.self="showWoModal = false">
-      <div class="modal">
+      <div class="modal inst-modal">
         <h3>核销 · {{ woRec.counterparty }}</h3>
         <div class="wo-summary">
           <span>{{ dirLabel }}金额 <b>{{ fmtAmt(woRec.advance_amount) }}</b></span>
           <span>已核销 <b>{{ fmtAmt(woRec.written_off_amount) }}</b></span>
           <span class="hl">未核销余额 <b>{{ fmtAmt(woRec.balance_amount) }}</b></span>
         </div>
+        <div class="inst-scroll">
         <table class="data-table compact">
           <thead>
             <tr>
@@ -1370,6 +1398,7 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
+        </div>
         <div v-if="canCreate || canWoAction" class="wo-add">
           <div v-if="canOffset" class="wo-offset-row">
             <span class="wo-offset-lbl">冲抵应收：</span>
@@ -1400,39 +1429,61 @@ onMounted(async () => {
 
     <!-- ── installment modal（收付明细：一条记录多次到账/付出）── -->
     <div v-if="showInstModal" class="modal-mask" @click.self="showInstModal = false">
-      <div class="modal">
-        <h3>收付明细 · {{ instRec.counterparty }}</h3>
+      <div class="modal inst-modal">
+        <div class="inst-head">
+          <h3>收付明细 · {{ instRec.counterparty }}</h3>
+          <button v-if="canCreate || canInstAction" class="btn btn-primary btn-sm" @click="openInstAdd">＋ 新增{{ dirLabel }}</button>
+        </div>
         <div class="wo-summary">
           <span>{{ dirLabel }}总额 <b>{{ fmtAmt(instRec.advance_amount) }}</b><i style="font-style:normal;font-size:11px;color:var(--muted)">（=明细之和）</i></span>
           <span>已核销 <b>{{ fmtAmt(instRec.written_off_amount) }}</b></span>
           <span class="hl">未核销余额 <b>{{ fmtAmt(instRec.balance_amount) }}</b></span>
         </div>
-        <table class="data-table compact">
-          <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
-          <tbody>
-            <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细</td></tr>
-            <tr v-for="i in instList" :key="i.id">
-              <td>{{ i.install_no }}</td>
-              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
-              <td>{{ i.occur_date }}</td>
-              <td>{{ i.notes || '—' }}</td>
-              <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="canCreate || canInstAction" class="wo-add">
-          <div class="wo-inputs">
-            <input v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="收付金额(元，可负=退回)" />
-            <input v-model="instForm.occur_date" type="date" class="inp" />
-            <input v-model="instForm.notes" class="inp" placeholder="备注（如：第二笔预付款）" />
-            <button class="btn btn-primary btn-sm" :disabled="instBusy" @click="addInstallment">{{ instBusy ? '…' : `＋ 新增${dirLabel}` }}</button>
-          </div>
-          <p style="font-size:11px;color:var(--muted);margin:6px 0 0">
-            与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
-          </p>
+        <div ref="instListBody" class="inst-scroll">
+          <table class="data-table compact">
+            <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
+            <tbody>
+              <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细——点右上角「＋ 新增{{ dirLabel }}」登记第一笔</td></tr>
+              <tr v-for="i in instList" :key="i.id" :class="{ 'row-flash': i.id === lastInstId }">
+                <td>{{ i.install_no }}</td>
+                <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
+                <td>{{ i.occur_date }}</td>
+                <td>{{ i.notes || '—' }}</td>
+                <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+        <p class="inst-note">
+          与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
+        </p>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showInstModal = false">关闭</button>
+        </div>
+
+        <!-- 新增收付卡片：固定居中浮层，Esc 关卡片、Enter 保存 -->
+        <div v-if="showInstAdd" class="inst-add-mask" @click.self="instAddMaskClick">
+          <div class="inst-add-card" @keydown.enter.prevent="saveInstAdd(false)">
+            <h4>新增{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 第 {{ instList.length + 1 }} 笔</span></h4>
+            <label class="ia-fld">
+              <span>收付金额 <em>*</em></span>
+              <input ref="instAmtInput" v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="元，负数=退回" />
+            </label>
+            <label class="ia-fld">
+              <span>收付日期 <em>*</em></span>
+              <input v-model="instForm.occur_date" type="date" class="inp" />
+            </label>
+            <label class="ia-fld">
+              <span>备注</span>
+              <input v-model="instForm.notes" class="inp" placeholder="如：第二笔预付款" />
+            </label>
+            <p class="ia-hint">Enter 保存 · Esc 取消 · 总额与未核销余额自动派生</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="showInstAdd = false">取消</button>
+              <button class="btn btn-ghost btn-sm" :disabled="instBusy" @click="saveInstAdd(true)">保存并继续</button>
+              <button class="btn btn-primary btn-sm" :disabled="instBusy" @click="saveInstAdd(false)">{{ instBusy ? '…' : '保存' }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1679,6 +1730,42 @@ onMounted(async () => {
 .wo-offset-sel { flex: 1; min-width: 220px; }
 .wo-offset-tip { font-size: 11px; color: var(--primary); opacity: 0.8; width: 100%; padding-left: 2px; }
 .wo-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* ── 收付/核销明细弹窗：固定高度、列表内滚（长列表不再撑开整个弹窗）── */
+.inst-modal { display: flex; flex-direction: column; max-height: 80vh; overflow: hidden; position: relative; }
+.inst-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.inst-head h3 { margin: 0 0 12px; }
+.inst-head .btn { flex-shrink: 0; margin-bottom: 8px; }
+.inst-scroll { flex: 1; min-height: 80px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.inst-scroll .data-table { margin: 0; }
+.inst-scroll thead th { position: sticky; top: 0; background: #f6efe7; z-index: 1; box-shadow: 0 1px 0 var(--border); }
+.inst-note { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+.row-flash td { animation: inst-flash 1.6s ease; }
+@keyframes inst-flash { 0% { background: rgba(201,99,66,0.20); } 100% { background: transparent; } }
+
+/* 新增收付卡片：固定居中浮层（覆盖整屏，不随列表滚动） */
+.inst-add-mask {
+  position: fixed; inset: 0; z-index: 320;
+  background: rgba(20,10,5,0.28); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.inst-add-card {
+  width: 360px; max-width: 92vw;
+  background: rgba(255,252,248,0.99);
+  border: 1px solid var(--glass-border); border-radius: 16px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 18px 60px rgba(100,60,30,0.32), 0 1px 0 rgba(255,255,255,0.85) inset;
+  animation: ia-pop .16s ease;
+}
+@keyframes ia-pop { from { transform: scale(.96) translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+.inst-add-card h4 { margin: 0 0 14px; font-size: 15px; display: flex; align-items: baseline; gap: 8px; }
+.ia-sub { font-size: 11.5px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ia-fld { display: block; margin-bottom: 10px; }
+.ia-fld > span { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.ia-fld > span em { color: var(--c-danger); font-style: normal; }
+.ia-fld .inp { width: 100%; }
+.ia-hint { font-size: 11px; color: var(--muted); margin: 2px 0 12px; }
+.ia-foot { display: flex; justify-content: flex-end; gap: 8px; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 
