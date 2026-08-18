@@ -317,7 +317,10 @@ class CaiwuCalculationLogicTests(TestCase):
         rev = self.l1[REV]
         d_old = L2Category.objects.create(business_unit=bu, name='仅早期部', sort_order=1)
         d_act = L2Category.objects.create(business_unit=bu, name='活跃部', sort_order=2)
-        for month, dept, amt in ((3, d_old, 900), (3, d_act, 100), (4, d_act, 200), (5, d_act, 700)):
+        d_half = L2Category.objects.create(business_unit=bu, name='半活跃部', sort_order=3)
+        # 半活跃部：4月无发生、仅5月有 → 末两月并非同时为0，不得收起
+        for month, dept, amt in ((3, d_old, 900), (3, d_act, 100), (4, d_act, 200),
+                                 (5, d_act, 700), (5, d_half, 50)):
             batch = ImportBatch.objects.create(
                 business_unit=bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
                 status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
@@ -337,6 +340,7 @@ class CaiwuCalculationLogicTests(TestCase):
             return ws.row_dimensions[r].outline_level or 0
         self.assertEqual(lvl(rowmap['仅早期部']), 1)      # 末两月(4,5)无发生 → 可收起
         self.assertEqual(lvl(rowmap['活跃部']), 0)        # 5月有发生 → 常显
+        self.assertEqual(lvl(rowmap['半活跃部']), 0)      # 仅单月为0（4月0、5月有）→ 常显
         self.assertEqual(lvl(rowmap[REV]), 0)             # 一级科目不标级
         self.assertEqual(lvl(rowmap['调整合计']), 0)      # 调整区不受影响
         self.assertEqual(lvl(rowmap['实际经营情况']), 0)
