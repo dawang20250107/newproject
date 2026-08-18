@@ -3082,11 +3082,16 @@ def _operating_sheet(ws, bu, year, months):
     ws.cell(row=row, column=1, value='调增调减明细')
     row += 1
     adj_rows = []
+    # 填写口径（实际经营情况=经营净利+调整合计，符号约定使公式天然成立）：
+    # 收入类：调增填正数、调减填负数；成本费用类：调增填负数、调减填正数
+    _ADJ_GUIDE = {'调增：': '收入类调增填正数；成本费用类调增填负数',
+                  '调减：': '收入类调减填负数；成本费用类调减填正数'}
     for label in ('调增：', '调增：', '调减：'):
         style_row(row, 10, False, indent=1)
         ws.cell(row=row, column=1, value=label)
         put_common(row)
         put_ratios(row, None)
+        ws.cell(row=row, column=col_note, value=_ADJ_GUIDE[label])
         adj_rows.append(row)
         row += 1
     adj_sum = row

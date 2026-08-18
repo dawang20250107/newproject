@@ -304,9 +304,17 @@ class CaiwuCalculationLogicTests(TestCase):
         adj, fin, np_r = rowmap['调整合计'], rowmap['实际经营情况'], rowmap[NET_PROFIT]
         self.assertTrue(str(ws.cell(row=adj, column=3).value).startswith('=SUM('))
         self.assertEqual(ws.cell(row=fin, column=3).value, f'=C{np_r}+C{adj}')
-        # 备注列不带任何自动备注
-        self.assertTrue(all(ws.cell(row=r, column=8).value in (None, '')
-                            for r in range(3, ws.max_row + 1)))
+        # 备注列不带自动备注——仅调增调减三行按约定带填写口径指引
+        adj_start = rowmap['调增调减明细']
+        guide_rows = {}
+        for r in range(3, ws.max_row + 1):
+            v = ws.cell(row=r, column=8).value
+            if adj_start < r < adj:
+                guide_rows[(ws.cell(row=r, column=1).value or '').strip()] = v
+            else:
+                self.assertIn(v, (None, ''), f'行{r} 备注应为空：{v!r}')
+        self.assertEqual(guide_rows['调增：'], '收入类调增填正数；成本费用类调增填负数')
+        self.assertEqual(guide_rows['调减：'], '收入类调减填负数；成本费用类调减填正数')
 
     def test_operating_export_outline_hides_quiet_last_two_months(self):
         # 末两月均无发生的部门/明细行 → 大纲第1级（Excel「1」一键收起）；
