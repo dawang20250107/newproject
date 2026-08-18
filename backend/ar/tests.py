@@ -5507,20 +5507,70 @@ class AdvanceInstallmentMigrateTests(TestCase):
         self.assertEqual(t.kind, 'cash_lines')
         self.assertEqual(self.tgt.transferred_in_amount, Decimal('0.00'))
 
-    def test_migrate_requires_carrying_writeoffs_when_covered(self):
-        # 全部 100000 已核销 90000 → 只迁走 40000 会让源余额为负 → 拒绝并给指引
+    def test_migrate_auto_carries_writeoffs_and_splits_boundary(self):
+        # 已核销 90000（单行）→ 迁 40000 笔：自动随迁 40000（拆行），源余额不变
         AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
                                        amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
         self.src.recompute_derived()
+        self.src.refresh_from_db()
+        bal_before = self.src.balance_amount          # 100000 − 90000 = 10000
         r = self._mig({'installment_ids': [self.i2.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        # 源：未核销余额不变（已核销覆盖部分整体平移）；核销行被拆为 50000
+        self.assertEqual(self.src.balance_amount, bal_before)
+        self.assertEqual(self.src.written_off_amount, Decimal('50000.00'))
+        self.assertEqual(self.src.writeoffs.get().amount, Decimal('50000.00'))
+        # 目标：+40000 收付 +40000 核销 → 余额也不变
+        self.assertEqual(self.tgt.written_off_amount, Decimal('40000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('5000.00'))
+        # 撤销：拆行拼回 90000、目标拆出行删除、双侧复原
+        t = AdvanceTransfer.objects.get()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.writeoffs.get().amount, Decimal('90000.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('10000.00'))
+        self.assertEqual(self.tgt.writeoffs.count(), 0)
+        self.assertEqual(self.tgt.balance_amount, Decimal('5000.00'))
+
+    def test_migrate_carry_none_rejected_when_covered(self):
+        # 不随迁模式：被核销覆盖时拒绝
+        AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                       amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        r = self._mig({'installment_ids': [self.i2.id], 'carry_mode': 'none',
+                       'reason': '更正', 'to_advance_id': self.tgt.id})
         self.assertEqual(r.status_code, 400)
-        self.assertIn('连带', (r.json().get('msg') or r.json().get('error') or ''))
-        # 连带迁移核销 → 通过；目标承接核销
+        # 关联型核销占满 → auto 也无纯核销可迁 → 拒绝并说明
         wo = self.src.writeoffs.get()
-        r2 = self._mig({'installment_ids': [self.i2.id], 'writeoff_ids': [wo.id],
-                        'reason': '更正', 'to_advance_id': self.tgt.id})
-        # 目标余额 = 5000 + 40000 − 90000 < 0 → 也应拒绝（核销超过迁入+目标余额）
+        rec = ARRecord.objects.create(
+            project=ARProject.objects.create(customer_name='占客', short_name='占项目',
+                                             delivery_dept=self.dept, sales_contact='s',
+                                             project_manager='m'),
+            operation_date=date(2026, 5, 1), estimated_amount=Decimal('1000'))
+        wo.ar_record = rec
+        wo.save()
+        r2 = self._mig({'installment_ids': [self.i2.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
         self.assertEqual(r2.status_code, 400)
+        self.assertIn('关联', (r2.json().get('msg') or r2.json().get('error') or ''))
+
+    def test_migrate_batch_multiple_installments(self):
+        # 批量：两笔一次迁走（含自动随迁），目标承接现金与核销
+        AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                       amount=Decimal('70000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        i1 = self.src.installments.get(install_no=1)
+        r = self._mig({'installment_ids': [i1.id, self.i2.id], 'reason': '整户搬迁',
+                       'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.advance_amount, Decimal('0.00'))
+        self.assertEqual(self.src.written_off_amount, Decimal('0.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('0.00'))
+        self.assertEqual(self.tgt.advance_amount, Decimal('105000.00'))
+        self.assertEqual(self.tgt.written_off_amount, Decimal('70000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('35000.00'))
 
     def test_migrate_with_writeoff_carry_success_and_undo(self):
         # 源核销 30000（覆盖第2笔的一部分）；迁第2笔(40000)+核销(30000) → 双侧均非负

@@ -2150,8 +2150,16 @@ def advance_transfer_detail(request, pk, tid):
                            .filter(id__in=wo_ids, advance_record_id=tgt.pk))
                 if len(insts) != len(inst_ids) or len(wos) != len(wo_ids):
                     return err('迁移的收付/核销行已在目标侧被修改或删除，无法撤销。请手工反向迁移更正')
+                sp = d.get('wo_split')
+                sp_moved = None
+                if sp:
+                    sp_moved = (AdvanceWriteoff.objects.select_for_update()
+                                .filter(pk=sp['moved_id'], advance_record_id=tgt.pk).first())
+                    if not sp_moved or str(sp_moved.amount) != sp['amount']:
+                        return err('拆分随迁的核销已在目标侧被修改或删除，无法撤销。请手工反向迁移更正')
                 inst_amt = sum((i.amount or Decimal('0')) for i in insts)
-                wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+                wo_amt = (sum((w.amount or Decimal('0')) for w in wos)
+                          + (Decimal(sp['amount']) if sp else Decimal('0')))
                 # 撤销后目标余额 = 现余额 − 迁入收付 + 随迁核销
                 if ((tgt.balance_amount or Decimal('0')) - inst_amt + wo_amt) < Decimal('0'):
                     return err('撤销后目标记录余额将为负（目标已使用迁入款项）。请先处理目标侧的核销或转移')
@@ -2184,6 +2192,21 @@ def advance_transfer_detail(request, pk, tid):
                     w.advance_record = src
                     w.notes = (w.notes or '').replace(note_tag, '').strip()
                     w.save()
+                if sp_moved is not None:
+                    # 拆分复原：目标侧拆出行删除，金额拼回源核销行（源行已删则重建）
+                    portion = Decimal(sp['amount'])
+                    src_row = (AdvanceWriteoff.objects.select_for_update()
+                               .filter(pk=sp['src_id'], advance_record_id=src.pk).first())
+                    sp_moved.delete()
+                    if src_row is not None:
+                        src_row.amount = (src_row.amount or Decimal('0')) + portion
+                        src_row.save()
+                    else:
+                        nxt_w += 1
+                        AdvanceWriteoff.objects.create(
+                            advance_record=src, writeoff_no=nxt_w, amount=portion,
+                            writeoff_date=_normalize_date(sp.get('writeoff_date'))
+                            or timezone.localdate())
                 t.delete()
                 for r_ in (src, tgt):
                     r_.refresh_from_db()
@@ -2296,6 +2319,12 @@ def advance_installments_migrate(request, pk):
     wo_ids = data.get('writeoff_ids') or []
     if not isinstance(wo_ids, list):
         return err('核销参数无效')
+    # 核销随迁模式：auto=自动同步（默认，FIFO 取纯登记核销 min(迁移额, 已核销)，
+    # 边界行自动拆分——已核销覆盖的部分整体平移，源未核销余额尽量不变）；
+    # none=仅迁收付；manual=显式 writeoff_ids（兼容旧调用）
+    carry_mode = (data.get('carry_mode') or ('manual' if wo_ids else 'auto')).strip()
+    if carry_mode not in ('auto', 'none', 'manual'):
+        return err('核销随迁模式无效')
     reason = (data.get('reason') or '').strip()
     if not reason:
         return err('请填写迁移原因（如：收付登记错对象），以便日后追溯')
@@ -2309,22 +2338,51 @@ def advance_installments_migrate(request, pk):
                          .filter(id__in=inst_ids, advance_record_id=src.pk))
             if len(insts) != len(set(inst_ids)):
                 return err('部分收付明细不存在或不属于本记录')
-            wos = list(AdvanceWriteoff.objects.select_for_update()
-                       .filter(id__in=wo_ids, advance_record_id=src.pk))
-            if len(wos) != len(set(wo_ids)):
-                return err('部分核销记录不存在或不属于本记录')
-            for w in wos:
-                if w.ar_record_id or w.ar_payment_id or w.payment_id:
-                    return err(f'第{w.writeoff_no}笔核销已关联预收抵扣回款/排款，不可随迁：'
-                               '请先删除该核销解除关联后重试')
             inst_amt = sum((i.amount or Decimal('0')) for i in insts)
-            wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+            split_plan = None   # (源核销行, 拆出金额)
+            if carry_mode == 'manual':
+                wos = list(AdvanceWriteoff.objects.select_for_update()
+                           .filter(id__in=wo_ids, advance_record_id=src.pk))
+                if len(wos) != len(set(wo_ids)):
+                    return err('部分核销记录不存在或不属于本记录')
+                for w in wos:
+                    if w.ar_record_id or w.ar_payment_id or w.payment_id:
+                        return err(f'第{w.writeoff_no}笔核销已关联预收抵扣回款/排款，不可随迁：'
+                                   '请先删除该核销解除关联后重试')
+                wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+            elif carry_mode == 'none':
+                wos = []
+                wo_amt = Decimal('0')
+            else:   # auto
+                carry_target = min(inst_amt, src.written_off_amount or Decimal('0'))
+                pure = list(AdvanceWriteoff.objects.select_for_update()
+                            .filter(advance_record_id=src.pk, ar_record__isnull=True,
+                                    ar_payment__isnull=True, payment__isnull=True)
+                            .order_by('writeoff_date', 'writeoff_no', 'id'))
+                remaining = carry_target
+                wos = []
+                for w in pure:
+                    if remaining <= Decimal('0'):
+                        break
+                    amt = w.amount or Decimal('0')
+                    if amt <= remaining:
+                        wos.append(w)
+                        remaining -= amt
+                    else:
+                        split_plan = (w, remaining)
+                        remaining = Decimal('0')
+                wo_amt = carry_target - remaining   # 纯核销池不足时只随迁可迁部分
             # 源侧：移走收付、随迁核销后余额不得为负
             src_after = (src.balance_amount or Decimal('0')) - inst_amt + wo_amt
             if src_after < Decimal('0'):
                 need = -src_after
+                if carry_mode == 'auto':
+                    return err(f'迁移后源记录余额将为负 {src_after:,.2f}：可自动随迁的纯登记核销'
+                               f'不足（缺 {need:,.2f}，其余核销已关联预收抵扣回款/排款）。'
+                               '请先撤销对应关联核销后重试')
                 return err(f'迁移后源记录余额将为负 {src_after:,.2f}：被迁收付已被核销覆盖，'
-                           f'请连带勾选约 {need:,.2f} 的纯登记核销一并迁移，或先撤销对应核销')
+                           f'请连带迁移约 {need:,.2f} 的纯登记核销（或用自动同步模式），'
+                           '或先撤销对应核销')
             # 目标：已有 or 新建（校验先行，写入殿后——return 不回滚事务）
             to_id = data.get('to_advance_id')
             new_target = None
@@ -2370,6 +2428,7 @@ def advance_installments_migrate(request, pk):
             # ── 落库：移动行 + 记转移单（cash_lines）──
             note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
             detail = {'installments': [], 'writeoffs': [],
+                      'carry_mode': carry_mode,
                       'wo_amount': str(wo_amt),
                       'earliest_date': str(min(i.occur_date for i in insts))}
             used = set(target.installments.values_list('install_no', flat=True))
@@ -2392,6 +2451,18 @@ def advance_installments_migrate(request, pk):
                 if note_tag not in (w.notes or ''):
                     w.notes = ((w.notes or '') + note_tag).strip()
                 w.save()
+            if split_plan is not None:
+                sw, portion = split_plan
+                sw.amount = (sw.amount or Decimal('0')) - portion
+                sw.save()
+                nxt_w += 1
+                moved = AdvanceWriteoff.objects.create(
+                    advance_record=target, writeoff_no=nxt_w, amount=portion,
+                    writeoff_date=sw.writeoff_date,
+                    notes=(((sw.notes or '') + note_tag).strip()))
+                detail['wo_split'] = {'src_id': sw.id, 'moved_id': moved.id,
+                                      'amount': str(portion),
+                                      'writeoff_date': str(sw.writeoff_date)}
             AdvanceTransfer.objects.create(
                 from_advance=src, to_advance=target, kind='cash_lines',
                 amount=inst_amt, transfer_date=tdate, reason=reason[:200],

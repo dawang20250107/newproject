@@ -678,8 +678,19 @@ async function loadTransfers() {
     transferList.tout = res.data.transfers_out || []
   } catch { transferList.tin = []; transferList.tout = [] }
 }
-const migInst = ref(null)          // 按笔迁移：选中的收付明细（null=按金额权益划转）
-const migCarryWos = ref([])        // 可连带迁移的纯登记核销（带 checked）
+const migInsts = ref([])           // 按笔迁移：选中的收付明细数组（空=按金额权益划转）
+const migCarry = ref('auto')       // 核销随迁：auto=自动同步（推荐）/ none=仅迁收付
+const migPureWoSum = ref(0)        // 纯登记核销池合计（预览随迁上限）
+const instSel = ref(new Set())     // 收付明细多选（批量迁移）
+function toggleInstSel(id) {
+  const st = new Set(instSel.value)
+  st.has(id) ? st.delete(id) : st.add(id)
+  instSel.value = st
+}
+function toggleInstSelAll() {
+  instSel.value = instSel.value.size === instList.value.length
+    ? new Set() : new Set(instList.value.map(i => i.id))
+}
 function _resetTransferForm() {
   Object.assign(transferForm, {
     amount: '', date: todayCST(), reason: '', mode: 'existing',
@@ -689,33 +700,44 @@ function _resetTransferForm() {
   targetOpts.value = []; targetProjOpts.value = []
 }
 function openTransfer() {
-  migInst.value = null
-  migCarryWos.value = []
+  migInsts.value = []
   _resetTransferForm()
   showTransfer.value = true
   searchTargets('')
   nextTick(() => transferAmtInput.value?.focus())
 }
-// 按笔迁移：这笔收付当初记错了对象 → 整笔物理迁走（现金流水随行更正）
-async function openInstMigrate(i) {
-  migInst.value = i
+// 按笔迁移：收付当初记错了对象 → 整笔物理迁走（现金流水随行更正）；支持多笔批量
+async function openInstMigrate(list) {
+  migInsts.value = Array.isArray(list) ? list : [list]
+  migCarry.value = 'auto'
   _resetTransferForm()
   showTransfer.value = true
   searchTargets('')
-  migCarryWos.value = []
+  migPureWoSum.value = 0
   try {
     const res = await ar.listWriteoffs(instRec.value.id)
-    migCarryWos.value = (res.data.items || [])
+    const rows = Array.isArray(res.data) ? res.data : (res.data.items || [])
+    migPureWoSum.value = rows
       .filter(w => !w.ar_record_id && !w.payment_id)
-      .map(w => ({ ...w, checked: false }))
-  } catch { migCarryWos.value = [] }
+      .reduce((s, w) => s + (parseFloat(w.amount) || 0), 0)
+  } catch { migPureWoSum.value = 0 }
 }
-// 迁移后源余额预览 = 现余额 − 该笔金额 + 勾选连带核销
+function migrateSelected() {
+  const list = instList.value.filter(i => instSel.value.has(i.id))
+  if (!list.length) { toast.error('请先勾选要迁移的收付明细'); return }
+  openInstMigrate(list)
+}
+const migAmt = computed(() => migInsts.value.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0))
+// 自动同步随迁核销 = min(迁移额, 已核销合计, 纯登记核销池)
+const migCarryAmt = computed(() => {
+  if (migCarry.value !== 'auto' || !instRec.value) return 0
+  return +Math.min(migAmt.value, Number(instRec.value.written_off_amount) || 0,
+                   migPureWoSum.value).toFixed(2)
+})
+// 迁移后源余额预览 = 现余额 − 迁移额 + 随迁核销
 const migSrcAfter = computed(() => {
-  if (!migInst.value || !instRec.value) return 0
-  const carry = migCarryWos.value.filter(w => w.checked)
-    .reduce((s, w) => s + (parseFloat(w.amount) || 0), 0)
-  return +(Number(instRec.value.balance_amount) - Number(migInst.value.amount) + carry).toFixed(2)
+  if (!migInsts.value.length || !instRec.value) return 0
+  return +(Number(instRec.value.balance_amount) - migAmt.value + migCarryAmt.value).toFixed(2)
 })
 let targetTimer = null
 async function searchTargets(kw) {
@@ -754,16 +776,16 @@ function pickTargetProject(pr) {
 }
 async function submitTransfer() {
   if (transferBusy.value) return
-  if (!migInst.value && !(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
+  if (!migInsts.value.length && !(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
   if (!transferForm.date) { toast.error('请选择转移日期'); return }
   if (!transferForm.reason.trim()) { toast.error('请填写转移原因（如：合同主体变更/项目落位），以便追溯'); return }
-  if (migInst.value && migSrcAfter.value < 0) {
-    toast.error('迁移后源余额为负：请连带勾选足额的纯登记核销，或先撤销对应核销'); return
+  if (migInsts.value.length && migSrcAfter.value < 0) {
+    toast.error('迁移后源余额为负：可自动随迁的纯登记核销不足，请先撤销对应关联核销'); return
   }
   const body = { transfer_date: transferForm.date, reason: transferForm.reason }
-  if (migInst.value) {
-    body.installment_ids = [migInst.value.id]
-    body.writeoff_ids = migCarryWos.value.filter(w => w.checked).map(w => w.id)
+  if (migInsts.value.length) {
+    body.installment_ids = migInsts.value.map(i => i.id)
+    body.carry_mode = migCarry.value
   } else {
     body.amount = transferForm.amount
   }
@@ -777,14 +799,15 @@ async function submitTransfer() {
   }
   transferBusy.value = true
   try {
-    if (migInst.value) {
+    if (migInsts.value.length) {
       await ar.migrateAdvInstallments(instRec.value.id, body)
+      instSel.value = new Set()
       const res = await ar.listAdvInstallments(instRec.value.id)
       instList.value = res.data.items
     } else {
       await ar.addAdvTransfer(instRec.value.id, body)
     }
-    toast.success(migInst.value ? '已整笔迁移' : '已转移')
+    toast.success(migInsts.value.length ? '已整笔迁移' : '已转移')
     showTransfer.value = false
     await loadTransfers()
     await load()
@@ -834,7 +857,7 @@ async function doMigrate(target) {
     toast.success('已迁移')
     migrateWo.value = null
     const res = await ar.listWriteoffs(woRec.value.id)
-    woList.value = res.data.items
+    woList.value = Array.isArray(res.data) ? res.data : (res.data.items || [])
     await load()
     const fresh = items.value.find(r => r.id === woRec.value.id)
     if (fresh) woRec.value = fresh
@@ -1646,6 +1669,7 @@ onMounted(async () => {
         <div class="inst-head">
           <h3>收付明细 · {{ instRec.counterparty }}</h3>
           <div class="inst-head-btns">
+            <button v-if="instSel.size" class="btn btn-primary btn-sm" @click="migrateSelected">⇄ 迁移选中（{{ instSel.size }} 笔）</button>
             <button v-if="canCreate || canTransferAction" class="btn btn-ghost btn-sm"
                     title="往来单位间/项目间权益转移（非现金，不产生收付流水）" @click="openTransfer">⇄ 转移</button>
             <button v-if="canCreate || canInstAction" class="btn btn-primary btn-sm" @click="openInstAdd">＋ 新增{{ dirLabel }}</button>
@@ -1660,10 +1684,14 @@ onMounted(async () => {
         </div>
         <div ref="instListBody" class="inst-scroll">
           <table class="data-table compact">
-            <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
+            <thead><tr>
+              <th v-if="canCreate || canTransferAction" class="sel-th"><input type="checkbox" title="全选（批量迁移）"
+                  :checked="instList.length > 0 && instSel.size === instList.length" @change="toggleInstSelAll" /></th>
+              <th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
             <tbody>
-              <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细——点右上角「＋ 新增{{ dirLabel }}」登记第一笔</td></tr>
-              <tr v-for="i in instList" :key="i.id" :class="{ 'row-flash': i.id === lastInstId }">
+              <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 6 : 5" class="empty">暂无收付明细——点右上角「＋ 新增{{ dirLabel }}」登记第一笔</td></tr>
+              <tr v-for="i in instList" :key="i.id" :class="{ 'row-flash': i.id === lastInstId, 'row-sel': instSel.has(i.id) }">
+                <td v-if="canCreate || canTransferAction" class="sel-th"><input type="checkbox" :checked="instSel.has(i.id)" @change="toggleInstSel(i.id)" /></td>
                 <td>{{ i.install_no }}</td>
                 <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
                 <td>{{ i.occur_date }}</td>
@@ -1705,25 +1733,27 @@ onMounted(async () => {
         <!-- 转移卡片：固定居中浮层，Esc 关闭 -->
         <div v-if="showTransfer" class="inst-add-mask" @click.self="() => { if (!transferForm.amount && !transferForm.reason) showTransfer = false }">
           <div class="inst-add-card tr-card">
-            <h4 v-if="migInst">⇄ 整笔迁移<span class="ia-sub">第{{ migInst.install_no }}笔 {{ fmtAmt(migInst.amount) }} · {{ migInst.occur_date }}</span></h4>
+            <h4 v-if="migInsts.length === 1">⇄ 整笔迁移<span class="ia-sub">第{{ migInsts[0].install_no }}笔 {{ fmtAmt(migInsts[0].amount) }} · {{ migInsts[0].occur_date }}</span></h4>
+            <h4 v-else-if="migInsts.length">⇄ 批量迁移<span class="ia-sub">{{ migInsts.length }} 笔 · 合计 {{ fmtAmt(migAmt) }}</span></h4>
             <h4 v-else>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
-            <div v-if="migInst" class="mig-info">收付日期与金额整笔随迁，现金口径同步更正（区别于按金额的权益划转）</div>
-            <label v-if="!migInst" class="ia-fld">
+            <div v-if="migInsts.length" class="mig-info">收付日期与金额整笔随迁，现金口径同步更正（区别于按金额的权益划转）</div>
+            <label v-if="!migInsts.length" class="ia-fld">
               <span>转移金额 <em>*</em>
                 <button type="button" class="wo-fill-chip" style="margin-left:6px"
                         @click="transferForm.amount = Number(instRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(instRec.balance_amount) }}</button>
               </span>
               <input ref="transferAmtInput" v-model="transferForm.amount" type="number" step="0.01" class="inp" placeholder="≤ 未核销余额" />
             </label>
-            <div v-if="migInst && migCarryWos.length" class="ia-fld">
-              <span>连带迁移核销（仅纯登记核销可随迁）</span>
-              <label v-for="w in migCarryWos" :key="w.id" class="mig-wo">
-                <input v-model="w.checked" type="checkbox" />
-                第{{ w.writeoff_no }}笔核销 {{ fmtAmt(w.amount) }}<em>{{ w.writeoff_date }}</em>
-              </label>
-              <div class="mig-preview" :class="{ bad: migSrcAfter < 0 }">迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负，需连带足额核销或先撤核销）</template></div>
+            <div v-if="migInsts.length" class="ia-fld">
+              <span>核销随迁</span>
+              <div class="tr-mode">
+                <label :class="{ active: migCarry === 'auto' }"><input v-model="migCarry" type="radio" value="auto" />自动同步（推荐）</label>
+                <label :class="{ active: migCarry === 'none' }"><input v-model="migCarry" type="radio" value="none" />仅迁收付</label>
+              </div>
+              <div class="mig-preview" :class="{ bad: migSrcAfter < 0 }">
+                <template v-if="migCarry === 'auto'">自动随迁核销 {{ fmtAmt(migCarryAmt) }} · </template>迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：可自动随迁的纯登记核销不足，请先撤销对应关联核销）</template>
+              </div>
             </div>
-            <div v-else-if="migInst" class="mig-preview" :class="{ bad: migSrcAfter < 0 }">迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：该笔已被核销覆盖，且无可随迁的纯登记核销，请先撤销对应核销）</template></div>
             <label class="ia-fld">
               <span>转移日期 <em>*</em></span>
               <input v-model="transferForm.date" type="date" class="inp" />
@@ -1761,10 +1791,10 @@ onMounted(async () => {
                 </div>
               </template>
             </div>
-            <p class="ia-hint">{{ migInst ? '整笔迁移：收付流水物理移动到目标，账龄按该笔收付日承袭；可整单撤销' : '转移是权益重分类：不产生现金流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
+            <p class="ia-hint">{{ migInsts.length ? '整笔迁移：收付流水物理移动到目标，已核销部分同步平移（自动拆行），账龄按收付日承袭；可整单撤销' : '转移是权益重分类：不产生现金流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
             <div class="ia-foot">
               <button class="btn btn-ghost btn-sm" @click="showTransfer = false">取消</button>
-              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : (migInst ? '确认迁移' : '确认转移') }}</button>
+              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : (migInsts.length ? '确认迁移' : '确认转移') }}</button>
             </div>
           </div>
         </div>
@@ -2105,6 +2135,8 @@ onMounted(async () => {
 .mig-wo { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 3px 0; cursor: pointer; }
 .mig-wo em { font-style: normal; font-size: 11px; color: var(--muted); }
 .mig-preview { margin-top: 6px; font-size: 12px; font-weight: 700; color: #1b6e35; }
+.inst-scroll .sel-th { width: 30px; text-align: center; }
+.inst-scroll tr.row-sel td { background: rgba(201,99,66,0.06); }
 .mig-preview.bad { color: var(--c-danger); }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
