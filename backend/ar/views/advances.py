@@ -2081,7 +2081,10 @@ def advance_transfers(request, pk):
                     return err('新建目标需填写往来单位')
                 project = None
                 if nt.get('project_id'):
-                    project = ARProject.objects.filter(pk=nt['project_id']).first()
+                    try:
+                        project = ARProject.objects.filter(pk=int(nt['project_id'])).first()
+                    except (TypeError, ValueError):
+                        return err('目标项目无效')
                     if not project:
                         return err('目标项目不存在')
                 target_dept = (project.delivery_dept if project
@@ -2168,7 +2171,8 @@ def advance_transfer_detail(request, pk, tid):
                 note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
                 used = set(src.installments.values_list('install_no', flat=True))
                 nxt = (max(used) if used else 0)
-                for i in insts:
+                # 正额先行搬回：避免负额行先落导致源侧信号中间态误拒
+                for i in sorted(insts, key=lambda x: (-(x.amount or Decimal('0')), x.install_no)):
                     want = orig_no.get(i.id)
                     if want and want not in used:
                         i.install_no = want
@@ -2193,7 +2197,8 @@ def advance_transfer_detail(request, pk, tid):
                     w.notes = (w.notes or '').replace(note_tag, '').strip()
                     w.save()
                 if sp_moved is not None:
-                    # 拆分复原：目标侧拆出行删除，金额拼回源核销行（源行已删则重建）
+                    # 拆分复原：目标侧拆出行删除，金额拼回源核销行（源行已删则重建）。
+                    # 重建取号必须感知 used_w（含按 orig_no 恢复的行），否则撞唯一键
                     portion = Decimal(sp['amount'])
                     src_row = (AdvanceWriteoff.objects.select_for_update()
                                .filter(pk=sp['src_id'], advance_record_id=src.pk).first())
@@ -2202,9 +2207,10 @@ def advance_transfer_detail(request, pk, tid):
                         src_row.amount = (src_row.amount or Decimal('0')) + portion
                         src_row.save()
                     else:
-                        nxt_w += 1
+                        rebuild_no = (max(used_w) if used_w else 0) + 1
+                        used_w.add(rebuild_no)
                         AdvanceWriteoff.objects.create(
-                            advance_record=src, writeoff_no=nxt_w, amount=portion,
+                            advance_record=src, writeoff_no=rebuild_no, amount=portion,
                             writeoff_date=_normalize_date(sp.get('writeoff_date'))
                             or timezone.localdate())
                 t.delete()
@@ -2260,6 +2266,15 @@ def advance_writeoff_migrate(request, pk, wid):
     try:
         with transaction.atomic():
             src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            # 锁内复检：并发的按笔迁移可能已把该核销整移/拆小——重取新鲜行，
+            # 陈旧对象直接 save 会把核销抢回或金额写回，造成双计
+            wo = (AdvanceWriteoff.objects.select_for_update()
+                  .filter(pk=wid, advance_record_id=src.pk).first())
+            if wo is None:
+                return err('该核销已被并发操作移动或删除，请刷新后重试')
+            if wo.ar_record_id or wo.ar_payment_id or wo.payment_id:
+                return err('该核销已关联预收抵扣回款/排款，不能直接迁移：'
+                           '请先删除该核销解除关联，将余额转移到目标记录后重新核销')
             try:
                 tgt = AdvanceRecord.objects.select_for_update().get(pk=to_id)
             except AdvanceRecord.DoesNotExist:
@@ -2319,12 +2334,19 @@ def advance_installments_migrate(request, pk):
     wo_ids = data.get('writeoff_ids') or []
     if not isinstance(wo_ids, list):
         return err('核销参数无效')
+    try:
+        inst_ids = [int(x) for x in inst_ids]
+        wo_ids = [int(x) for x in wo_ids]
+    except (TypeError, ValueError):
+        return err('明细参数无效')
     # 核销随迁模式：auto=自动同步（默认，FIFO 取纯登记核销 min(迁移额, 已核销)，
     # 边界行自动拆分——已核销覆盖的部分整体平移，源未核销余额尽量不变）；
     # none=仅迁收付；manual=显式 writeoff_ids（兼容旧调用）
     carry_mode = (data.get('carry_mode') or ('manual' if wo_ids else 'auto')).strip()
     if carry_mode not in ('auto', 'none', 'manual'):
         return err('核销随迁模式无效')
+    if carry_mode != 'manual' and wo_ids:
+        return err('carry_mode 为 auto/none 时不能同时指定 writeoff_ids（二者语义冲突）')
     reason = (data.get('reason') or '').strip()
     if not reason:
         return err('请填写迁移原因（如：收付登记错对象），以便日后追溯')
@@ -2339,6 +2361,11 @@ def advance_installments_migrate(request, pk):
             if len(insts) != len(set(inst_ids)):
                 return err('部分收付明细不存在或不属于本记录')
             inst_amt = sum((i.amount or Decimal('0')) for i in insts)
+            # 转移单金额约束 amount>0：净额非正的选择（仅退回行/正负抵零）不可单独迁，
+            # 退回行须与其对应的正额收付一起选中迁移
+            if inst_amt <= Decimal('0'):
+                return err(f'所选收付净额为 {inst_amt:,.2f}，必须大于0：'
+                           '退回（负额）行请与对应的正额收付行一起勾选迁移')
             split_plan = None   # (源核销行, 拆出金额)
             if carry_mode == 'manual':
                 wos = list(AdvanceWriteoff.objects.select_for_update()
@@ -2403,7 +2430,10 @@ def advance_installments_migrate(request, pk):
                     return err('新建目标需填写往来单位')
                 project = None
                 if nt.get('project_id'):
-                    project = ARProject.objects.filter(pk=nt['project_id']).first()
+                    try:
+                        project = ARProject.objects.filter(pk=int(nt['project_id'])).first()
+                    except (TypeError, ValueError):
+                        return err('目标项目无效')
                     if not project:
                         return err('目标项目不存在')
                 target_dept = (project.delivery_dept if project
@@ -2411,6 +2441,13 @@ def advance_installments_migrate(request, pk):
                 new_target = (cp, project)
             if target_dept != src.delivery_dept and request.pk_role != 'super_admin':
                 return err('跨事业部迁移仅超级管理员可操作', 403, 403)
+            # 目标侧余额守卫先行（新建目标初始余额为0）：err 返回不回滚事务，
+            # 一切校验必须发生在任何写入之前，否则会留下孤儿目标记录
+            _tgt_bal_before = (Decimal('0') if new_target is not None
+                               else (target.balance_amount or Decimal('0')))
+            tgt_after = _tgt_bal_before + inst_amt - wo_amt
+            if tgt_after < Decimal('0'):
+                return err(f'迁移后目标记录余额将为负 {tgt_after:,.2f}：随迁核销超过迁入收付与目标余额之和')
             if new_target is not None:
                 cp, project = new_target
                 target = AdvanceRecord(
@@ -2421,19 +2458,18 @@ def advance_installments_migrate(request, pk):
                     expected_writeoff_date=src.expected_writeoff_date,
                     notes=f'由迁移新建（源：{src.counterparty}）', created_by=user)
                 target.save()
-            # 目标侧：迁入收付 − 随迁核销 后余额不得为负
-            tgt_after = (target.balance_amount or Decimal('0')) + inst_amt - wo_amt
-            if tgt_after < Decimal('0'):
-                return err(f'迁移后目标记录余额将为负 {tgt_after:,.2f}：随迁核销超过迁入收付与目标余额之和')
             # ── 落库：移动行 + 记转移单（cash_lines）──
             note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
             detail = {'installments': [], 'writeoffs': [],
                       'carry_mode': carry_mode,
                       'wo_amount': str(wo_amt),
-                      'earliest_date': str(min(i.occur_date for i in insts))}
+                      # 账龄承袭基准只看正额收付（退回行不该把账龄钉早）
+                      'earliest_date': str(min(i.occur_date for i in insts
+                                               if (i.amount or Decimal('0')) > 0))}
             used = set(target.installments.values_list('install_no', flat=True))
             nxt = (max(used) if used else 0)
-            for i in sorted(insts, key=lambda x: x.install_no):
+            # 正额先行：混合正负时先抬高目标余额再落负额行，避免信号中间态误拒
+            for i in sorted(insts, key=lambda x: (-(x.amount or Decimal('0')), x.install_no)):
                 detail['installments'].append({'id': i.id, 'orig_no': i.install_no})
                 nxt += 1
                 i.install_no = nxt

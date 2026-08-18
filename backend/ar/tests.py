@@ -5627,6 +5627,67 @@ class AdvanceInstallmentMigrateTests(TestCase):
         self.assertEqual(self._mig({'installment_ids': [self.i2.id], 'reason': 'x',
                                     'to_advance_id': pay.id}).status_code, 400)
 
+    def test_undo_split_rebuild_avoids_no_collision(self):
+        # F1 回归：拆分源行在撤销前被删除 → 重建行取号须避开按 orig 恢复的行
+        for no, amt, d in ((1, '20000', date(2026, 1, 5)), (2, '30000', date(2026, 2, 5)),
+                           (3, '40000', date(2026, 3, 5))):
+            AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=no,
+                                           amount=Decimal(amt), writeoff_date=d)
+        self.src.recompute_derived()
+        # 迁 60000（第1笔）→ FIFO 整迁 #1#2，#3 拆出 10000
+        i1 = self.src.installments.get(install_no=1)
+        r = self._mig({'installment_ids': [i1.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        # 删除源侧剩余的 #3（合法操作）
+        left = self.src.writeoffs.get()
+        self.client.delete(f'/api/pk/ar/advances/{self.src.id}/writeoffs/{left.id}', **self.auth())
+        # 撤销：曾经 500（重建行撞唯一键），现须成功
+        t = AdvanceTransfer.objects.get()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.src.refresh_from_db()
+        nos = sorted(self.src.writeoffs.values_list('writeoff_no', flat=True))
+        self.assertEqual(len(nos), len(set(nos)))   # 无重号
+        self.assertEqual(self.src.written_off_amount, Decimal('60000.00'))
+
+    def test_new_target_guard_leaves_no_orphan(self):
+        # F2 回归：manual 随迁核销超过迁入额 + 新建目标 → 400 且不留孤儿记录
+        wo = AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                            amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        before = AdvanceRecord.objects.count()
+        r = self._mig({'installment_ids': [self.i2.id], 'writeoff_ids': [wo.id],
+                       'reason': 'x', 'new_target': {'counterparty': '孤儿客'}})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(AdvanceRecord.objects.count(), before)   # 无孤儿
+
+    def test_negative_net_and_conflict_params_rejected(self):
+        # F3 回归：仅负额/净零选择 → 400 明确提示；F6 回归：auto+writeoff_ids 冲突 → 400
+        neg = AdvanceInstallment.objects.create(advance_record=self.src, install_no=3,
+                                                amount=Decimal('-300'), occur_date=date(2026, 3, 1))
+        self.src.refresh_from_db()
+        r = self._mig({'installment_ids': [neg.id], 'reason': 'x', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('大于0', (r.json().get('msg') or r.json().get('error') or ''))
+        r2 = self._mig({'installment_ids': [self.i2.id], 'carry_mode': 'auto',
+                        'writeoff_ids': [1], 'reason': 'x', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r2.status_code, 400)
+
+    def test_mixed_sign_migration_and_aging_ignores_negative(self):
+        # F4/F7 回归：正负混选（净正）迁到低余额目标成功；账龄基准不被负额行钉早
+        neg = AdvanceInstallment.objects.create(advance_record=self.src, install_no=3,
+                                                amount=Decimal('-300'), occur_date=date(2025, 1, 1))
+        self.src.refresh_from_db()
+        low = mk_advance(direction='预收', counterparty='低余额', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+                         advance_amount=Decimal('100'))
+        r = self._mig({'installment_ids': [neg.id, self.i2.id], 'reason': '混合迁移',
+                       'to_advance_id': low.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        low.refresh_from_db()
+        self.assertEqual(low.advance_amount, Decimal('39800.00'))   # 100+40000−300
+        self.assertEqual(low.aging_base_date, date(2026, 2, 20))    # 忽略 2025 的退回行
+
     def test_migrate_to_new_target_with_project(self):
         proj = ARProject.objects.create(customer_name='新客', short_name='落位项目',
                                         delivery_dept=self.dept, sales_contact='s',
