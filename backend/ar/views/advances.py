@@ -2140,13 +2140,66 @@ def advance_transfer_detail(request, pk, tid):
         with transaction.atomic():
             src = AdvanceRecord.objects.select_for_update().get(pk=t.from_advance_id)
             tgt = AdvanceRecord.objects.select_for_update().get(pk=t.to_advance_id)
-            if (tgt.balance_amount or Decimal('0')) < (t.amount or Decimal('0')):
-                return err(f'撤销后目标记录余额将为负（目标已使用转入款项 '
-                           f'{(t.amount or Decimal("0")):,.2f}）。请先处理目标侧的核销或转移，再撤销本单')
-            t.delete()
-            src.recompute_derived()
-            tgt.recompute_derived()
-            tgt.recompute_aging_base()
+            if t.kind == 'cash_lines':
+                d = t.detail or {}
+                inst_ids = [x['id'] for x in d.get('installments', [])]
+                wo_ids = [x['id'] for x in d.get('writeoffs', [])]
+                insts = list(AdvanceInstallment.objects.select_for_update()
+                             .filter(id__in=inst_ids, advance_record_id=tgt.pk))
+                wos = list(AdvanceWriteoff.objects.select_for_update()
+                           .filter(id__in=wo_ids, advance_record_id=tgt.pk))
+                if len(insts) != len(inst_ids) or len(wos) != len(wo_ids):
+                    return err('迁移的收付/核销行已在目标侧被修改或删除，无法撤销。请手工反向迁移更正')
+                inst_amt = sum((i.amount or Decimal('0')) for i in insts)
+                wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+                # 撤销后目标余额 = 现余额 − 迁入收付 + 随迁核销
+                if ((tgt.balance_amount or Decimal('0')) - inst_amt + wo_amt) < Decimal('0'):
+                    return err('撤销后目标记录余额将为负（目标已使用迁入款项）。请先处理目标侧的核销或转移')
+                orig_no = {x['id']: x.get('orig_no') for x in d.get('installments', [])}
+                orig_wo_no = {x['id']: x.get('orig_no') for x in d.get('writeoffs', [])}
+                note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+                used = set(src.installments.values_list('install_no', flat=True))
+                nxt = (max(used) if used else 0)
+                for i in insts:
+                    want = orig_no.get(i.id)
+                    if want and want not in used:
+                        i.install_no = want
+                    else:
+                        nxt += 1
+                        i.install_no = nxt
+                    used.add(i.install_no)
+                    i.advance_record = src
+                    i.notes = (i.notes or '').replace(note_tag, '').strip()
+                    i.save()
+                used_w = set(src.writeoffs.values_list('writeoff_no', flat=True))
+                nxt_w = (max(used_w) if used_w else 0)
+                for w in wos:
+                    want = orig_wo_no.get(w.id)
+                    if want and want not in used_w:
+                        w.writeoff_no = want
+                    else:
+                        nxt_w += 1
+                        w.writeoff_no = nxt_w
+                    used_w.add(w.writeoff_no)
+                    w.advance_record = src
+                    w.notes = (w.notes or '').replace(note_tag, '').strip()
+                    w.save()
+                t.delete()
+                for r_ in (src, tgt):
+                    r_.refresh_from_db()
+                    r_.advance_amount = (r_.installments.aggregate(s=Sum('amount'))['s']
+                                         or Decimal('0'))
+                    AdvanceRecord.objects.filter(pk=r_.pk).update(advance_amount=r_.advance_amount)
+                    r_.recompute_derived()
+                tgt.recompute_aging_base()
+            else:
+                if (tgt.balance_amount or Decimal('0')) < (t.amount or Decimal('0')):
+                    return err(f'撤销后目标记录余额将为负（目标已使用转入款项 '
+                               f'{(t.amount or Decimal("0")):,.2f}）。请先处理目标侧的核销或转移，再撤销本单')
+                t.delete()
+                src.recompute_derived()
+                tgt.recompute_derived()
+                tgt.recompute_aging_base()
     except ValidationError as e:
         return err(str(e.message if hasattr(e, 'message') else e), 400)
     return ok(_transfers_payload(pk))
@@ -2210,6 +2263,150 @@ def advance_writeoff_migrate(request, pk, wid):
     except ValidationError as e:
         return err(str(e.message if hasattr(e, 'message') else e), 400)
     return ok({'moved': True, 'from': _transfers_payload(pk), 'to': _transfers_payload(to_id)})
+
+@csrf_exempt
+@pk_required()
+def advance_installments_migrate(request, pk):
+    """POST /advances/<pk>/installments/migrate — 按笔迁移收付明细（可连带核销）。
+
+    body: {installment_ids: [..], writeoff_ids: [..]?, reason,
+           transfer_date?, to_advance_id | new_target{counterparty, project_id?}}
+
+    与「权益划转」互补的第二种转移语义：这笔收付当初就记错了对象 → 把选中的
+    收付行（及可选的纯登记核销行）整笔物理迁移到目标记录，收付日期/金额随行，
+    现金口径同步更正。守卫：双侧余额均不得为负（源侧核销覆盖被迁收付时须
+    连带迁核销或先撤核销）；关联型核销不可随迁；跨事业部仅超管；整个操作
+    原子且可整单撤销（DELETE 对应转移单）。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _transfer_gate(request, rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    inst_ids = data.get('installment_ids') or []
+    if not isinstance(inst_ids, list) or not inst_ids:
+        return err('请选择要迁移的收付明细')
+    wo_ids = data.get('writeoff_ids') or []
+    if not isinstance(wo_ids, list):
+        return err('核销参数无效')
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return err('请填写迁移原因（如：收付登记错对象），以便日后追溯')
+    tdate = _normalize_date(data.get('transfer_date')) or timezone.localdate()
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            insts = list(AdvanceInstallment.objects.select_for_update()
+                         .filter(id__in=inst_ids, advance_record_id=src.pk))
+            if len(insts) != len(set(inst_ids)):
+                return err('部分收付明细不存在或不属于本记录')
+            wos = list(AdvanceWriteoff.objects.select_for_update()
+                       .filter(id__in=wo_ids, advance_record_id=src.pk))
+            if len(wos) != len(set(wo_ids)):
+                return err('部分核销记录不存在或不属于本记录')
+            for w in wos:
+                if w.ar_record_id or w.ar_payment_id or w.payment_id:
+                    return err(f'第{w.writeoff_no}笔核销已关联预收抵扣回款/排款，不可随迁：'
+                               '请先删除该核销解除关联后重试')
+            inst_amt = sum((i.amount or Decimal('0')) for i in insts)
+            wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+            # 源侧：移走收付、随迁核销后余额不得为负
+            src_after = (src.balance_amount or Decimal('0')) - inst_amt + wo_amt
+            if src_after < Decimal('0'):
+                need = -src_after
+                return err(f'迁移后源记录余额将为负 {src_after:,.2f}：被迁收付已被核销覆盖，'
+                           f'请连带勾选约 {need:,.2f} 的纯登记核销一并迁移，或先撤销对应核销')
+            # 目标：已有 or 新建（校验先行，写入殿后——return 不回滚事务）
+            to_id = data.get('to_advance_id')
+            new_target = None
+            if to_id:
+                try:
+                    target = AdvanceRecord.objects.select_for_update().get(pk=int(to_id))
+                except (AdvanceRecord.DoesNotExist, ValueError, TypeError):
+                    return err('目标记录不存在')
+                if target.pk == src.pk:
+                    return err('不能迁移到记录自身')
+                if target.direction != src.direction:
+                    return err(f'方向不一致：{src.direction} 只能迁移到同方向记录')
+                target_dept = target.delivery_dept
+            else:
+                nt = data.get('new_target') or {}
+                cp = (nt.get('counterparty') or '').strip()
+                if not cp:
+                    return err('新建目标需填写往来单位')
+                project = None
+                if nt.get('project_id'):
+                    project = ARProject.objects.filter(pk=nt['project_id']).first()
+                    if not project:
+                        return err('目标项目不存在')
+                target_dept = (project.delivery_dept if project
+                               else ((nt.get('delivery_dept') or '').strip() or src.delivery_dept))
+                new_target = (cp, project)
+            if target_dept != src.delivery_dept and request.pk_role != 'super_admin':
+                return err('跨事业部迁移仅超级管理员可操作', 403, 403)
+            if new_target is not None:
+                cp, project = new_target
+                target = AdvanceRecord(
+                    direction=src.direction, counterparty=cp, project=project,
+                    delivery_dept=target_dept,
+                    occur_year=src.occur_year, occur_month=src.occur_month,
+                    occur_date=None, advance_amount=Decimal('0'),
+                    expected_writeoff_date=src.expected_writeoff_date,
+                    notes=f'由迁移新建（源：{src.counterparty}）', created_by=user)
+                target.save()
+            # 目标侧：迁入收付 − 随迁核销 后余额不得为负
+            tgt_after = (target.balance_amount or Decimal('0')) + inst_amt - wo_amt
+            if tgt_after < Decimal('0'):
+                return err(f'迁移后目标记录余额将为负 {tgt_after:,.2f}：随迁核销超过迁入收付与目标余额之和')
+            # ── 落库：移动行 + 记转移单（cash_lines）──
+            note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+            detail = {'installments': [], 'writeoffs': [],
+                      'wo_amount': str(wo_amt),
+                      'earliest_date': str(min(i.occur_date for i in insts))}
+            used = set(target.installments.values_list('install_no', flat=True))
+            nxt = (max(used) if used else 0)
+            for i in sorted(insts, key=lambda x: x.install_no):
+                detail['installments'].append({'id': i.id, 'orig_no': i.install_no})
+                nxt += 1
+                i.install_no = nxt
+                i.advance_record = target
+                if note_tag not in (i.notes or ''):
+                    i.notes = ((i.notes or '') + note_tag).strip()
+                i.save()
+            used_w = set(target.writeoffs.values_list('writeoff_no', flat=True))
+            nxt_w = (max(used_w) if used_w else 0)
+            for w in sorted(wos, key=lambda x: x.writeoff_no):
+                detail['writeoffs'].append({'id': w.id, 'orig_no': w.writeoff_no})
+                nxt_w += 1
+                w.writeoff_no = nxt_w
+                w.advance_record = target
+                if note_tag not in (w.notes or ''):
+                    w.notes = ((w.notes or '') + note_tag).strip()
+                w.save()
+            AdvanceTransfer.objects.create(
+                from_advance=src, to_advance=target, kind='cash_lines',
+                amount=inst_amt, transfer_date=tdate, reason=reason[:200],
+                detail=detail, created_by=user)
+            for r_ in (src, target):
+                r_.refresh_from_db()
+                r_.advance_amount = (r_.installments.aggregate(s=Sum('amount'))['s']
+                                     or Decimal('0'))
+                AdvanceRecord.objects.filter(pk=r_.pk).update(advance_amount=r_.advance_amount)
+                r_.recompute_derived()
+            target.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({**_transfers_payload(pk), 'target_id': target.pk})
+
 
 # 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。
 __all__ = [n for n in dir() if not n.startswith('__')]

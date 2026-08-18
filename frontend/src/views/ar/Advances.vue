@@ -678,17 +678,45 @@ async function loadTransfers() {
     transferList.tout = res.data.transfers_out || []
   } catch { transferList.tin = []; transferList.tout = [] }
 }
-function openTransfer() {
+const migInst = ref(null)          // 按笔迁移：选中的收付明细（null=按金额权益划转）
+const migCarryWos = ref([])        // 可连带迁移的纯登记核销（带 checked）
+function _resetTransferForm() {
   Object.assign(transferForm, {
     amount: '', date: todayCST(), reason: '', mode: 'existing',
     to_advance_id: '', target_label: '', target_kw: '',
     new_counterparty: '', new_project_id: '', new_project_kw: '',
   })
   targetOpts.value = []; targetProjOpts.value = []
+}
+function openTransfer() {
+  migInst.value = null
+  migCarryWos.value = []
+  _resetTransferForm()
   showTransfer.value = true
   searchTargets('')
   nextTick(() => transferAmtInput.value?.focus())
 }
+// 按笔迁移：这笔收付当初记错了对象 → 整笔物理迁走（现金流水随行更正）
+async function openInstMigrate(i) {
+  migInst.value = i
+  _resetTransferForm()
+  showTransfer.value = true
+  searchTargets('')
+  migCarryWos.value = []
+  try {
+    const res = await ar.listWriteoffs(instRec.value.id)
+    migCarryWos.value = (res.data.items || [])
+      .filter(w => !w.ar_record_id && !w.payment_id)
+      .map(w => ({ ...w, checked: false }))
+  } catch { migCarryWos.value = [] }
+}
+// 迁移后源余额预览 = 现余额 − 该笔金额 + 勾选连带核销
+const migSrcAfter = computed(() => {
+  if (!migInst.value || !instRec.value) return 0
+  const carry = migCarryWos.value.filter(w => w.checked)
+    .reduce((s, w) => s + (parseFloat(w.amount) || 0), 0)
+  return +(Number(instRec.value.balance_amount) - Number(migInst.value.amount) + carry).toFixed(2)
+})
 let targetTimer = null
 async function searchTargets(kw) {
   try {
@@ -726,10 +754,19 @@ function pickTargetProject(pr) {
 }
 async function submitTransfer() {
   if (transferBusy.value) return
-  if (!(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
+  if (!migInst.value && !(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
   if (!transferForm.date) { toast.error('请选择转移日期'); return }
   if (!transferForm.reason.trim()) { toast.error('请填写转移原因（如：合同主体变更/项目落位），以便追溯'); return }
-  const body = { amount: transferForm.amount, transfer_date: transferForm.date, reason: transferForm.reason }
+  if (migInst.value && migSrcAfter.value < 0) {
+    toast.error('迁移后源余额为负：请连带勾选足额的纯登记核销，或先撤销对应核销'); return
+  }
+  const body = { transfer_date: transferForm.date, reason: transferForm.reason }
+  if (migInst.value) {
+    body.installment_ids = [migInst.value.id]
+    body.writeoff_ids = migCarryWos.value.filter(w => w.checked).map(w => w.id)
+  } else {
+    body.amount = transferForm.amount
+  }
   if (transferForm.mode === 'existing') {
     if (!transferForm.to_advance_id) { toast.error('请选择目标记录'); return }
     body.to_advance_id = transferForm.to_advance_id
@@ -740,8 +777,14 @@ async function submitTransfer() {
   }
   transferBusy.value = true
   try {
-    await ar.addAdvTransfer(instRec.value.id, body)
-    toast.success('已转移')
+    if (migInst.value) {
+      await ar.migrateAdvInstallments(instRec.value.id, body)
+      const res = await ar.listAdvInstallments(instRec.value.id)
+      instList.value = res.data.items
+    } else {
+      await ar.addAdvTransfer(instRec.value.id, body)
+    }
+    toast.success(migInst.value ? '已整笔迁移' : '已转移')
     showTransfer.value = false
     await loadTransfers()
     await load()
@@ -756,6 +799,11 @@ async function undoTransfer(t) {
     await ar.deleteAdvTransfer(instRec.value.id, t.id)
     toast.success('已撤销')
     await loadTransfers()
+    // 整笔迁移撤销会把收付/核销行搬回来 → 同步刷新明细列表
+    try {
+      const res = await ar.listAdvInstallments(instRec.value.id)
+      instList.value = res.data.items
+    } catch {}
     await load()
     const fresh = items.value.find(r => r.id === instRec.value.id)
     if (fresh) instRec.value = fresh
@@ -1620,7 +1668,10 @@ onMounted(async () => {
                 <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
                 <td>{{ i.occur_date }}</td>
                 <td>{{ i.notes || '—' }}</td>
-                <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
+                <td v-if="canCreate || canInstAction">
+                  <button v-if="canCreate || canTransferAction" class="lnk" title="这笔收付记错对象？整笔迁移到另一条记录（现金流水随行）" @click="openInstMigrate(i)">迁移</button>
+                  <button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -1628,6 +1679,7 @@ onMounted(async () => {
         <div v-if="transferList.tout.length || transferList.tin.length" class="tr-sec">
           <div class="tr-sec-head">转移记录<i>权益重分类，非现金，不计入收付流水</i></div>
           <div v-for="t in transferList.tout" :key="'o' + t.id" class="tr-item">
+            <span class="tr-kind" :class="{ cash: t.kind === 'cash_lines' }">{{ t.kind === 'cash_lines' ? '整笔' : '权益' }}</span>
             <b class="tr-amt-out">−{{ fmtAmt(t.amount) }}</b>
             <span>→ {{ t.to.counterparty || '—' }}<template v-if="t.to.short_name">·{{ t.to.short_name }}</template><template v-if="t.to.delivery_dept !== instRec.delivery_dept">（{{ t.to.delivery_dept }}）</template></span>
             <em>{{ t.transfer_date }}</em>
@@ -1635,6 +1687,7 @@ onMounted(async () => {
             <button v-if="canCreate || canTransferAction" class="lnk danger" @click="undoTransfer(t)">撤销</button>
           </div>
           <div v-for="t in transferList.tin" :key="'i' + t.id" class="tr-item">
+            <span class="tr-kind" :class="{ cash: t.kind === 'cash_lines' }">{{ t.kind === 'cash_lines' ? '整笔' : '权益' }}</span>
             <b class="tr-amt-in">+{{ fmtAmt(t.amount) }}</b>
             <span>← {{ t.from.counterparty || '—' }}<template v-if="t.from.short_name">·{{ t.from.short_name }}</template><template v-if="t.from.delivery_dept !== instRec.delivery_dept">（{{ t.from.delivery_dept }}）</template></span>
             <em>{{ t.transfer_date }}</em>
@@ -1652,14 +1705,25 @@ onMounted(async () => {
         <!-- 转移卡片：固定居中浮层，Esc 关闭 -->
         <div v-if="showTransfer" class="inst-add-mask" @click.self="() => { if (!transferForm.amount && !transferForm.reason) showTransfer = false }">
           <div class="inst-add-card tr-card">
-            <h4>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
-            <label class="ia-fld">
+            <h4 v-if="migInst">⇄ 整笔迁移<span class="ia-sub">第{{ migInst.install_no }}笔 {{ fmtAmt(migInst.amount) }} · {{ migInst.occur_date }}</span></h4>
+            <h4 v-else>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
+            <div v-if="migInst" class="mig-info">收付日期与金额整笔随迁，现金口径同步更正（区别于按金额的权益划转）</div>
+            <label v-if="!migInst" class="ia-fld">
               <span>转移金额 <em>*</em>
                 <button type="button" class="wo-fill-chip" style="margin-left:6px"
                         @click="transferForm.amount = Number(instRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(instRec.balance_amount) }}</button>
               </span>
               <input ref="transferAmtInput" v-model="transferForm.amount" type="number" step="0.01" class="inp" placeholder="≤ 未核销余额" />
             </label>
+            <div v-if="migInst && migCarryWos.length" class="ia-fld">
+              <span>连带迁移核销（仅纯登记核销可随迁）</span>
+              <label v-for="w in migCarryWos" :key="w.id" class="mig-wo">
+                <input v-model="w.checked" type="checkbox" />
+                第{{ w.writeoff_no }}笔核销 {{ fmtAmt(w.amount) }}<em>{{ w.writeoff_date }}</em>
+              </label>
+              <div class="mig-preview" :class="{ bad: migSrcAfter < 0 }">迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负，需连带足额核销或先撤核销）</template></div>
+            </div>
+            <div v-else-if="migInst" class="mig-preview" :class="{ bad: migSrcAfter < 0 }">迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：该笔已被核销覆盖，且无可随迁的纯登记核销，请先撤销对应核销）</template></div>
             <label class="ia-fld">
               <span>转移日期 <em>*</em></span>
               <input v-model="transferForm.date" type="date" class="inp" />
@@ -1697,10 +1761,10 @@ onMounted(async () => {
                 </div>
               </template>
             </div>
-            <p class="ia-hint">转移是权益重分类：不产生现金流水，账龄承袭原记录；跨事业部转移仅超级管理员</p>
+            <p class="ia-hint">{{ migInst ? '整笔迁移：收付流水物理移动到目标，账龄按该笔收付日承袭；可整单撤销' : '转移是权益重分类：不产生现金流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
             <div class="ia-foot">
               <button class="btn btn-ghost btn-sm" @click="showTransfer = false">取消</button>
-              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : '确认转移' }}</button>
+              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : (migInst ? '确认迁移' : '确认转移') }}</button>
             </div>
           </div>
         </div>
@@ -2035,6 +2099,13 @@ onMounted(async () => {
 .tr-opt i { font-style: normal; font-size: 11px; color: var(--muted); }
 .tr-opt em { font-style: normal; font-size: 11px; color: var(--primary); margin-left: auto; white-space: nowrap; }
 .tr-picked { font-size: 12.5px; font-weight: 600; padding: 6px 10px; background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.25); border-radius: 8px; display: flex; align-items: center; gap: 8px; }
+.tr-kind { font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 6px; background: rgba(120,120,120,0.12); color: var(--muted); flex-shrink: 0; }
+.tr-kind.cash { background: rgba(21,101,192,0.12); color: var(--c-info); }
+.mig-info { font-size: 11.5px; color: var(--c-info); background: rgba(21,101,192,0.06); border: 1px solid rgba(21,101,192,0.18); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+.mig-wo { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 3px 0; cursor: pointer; }
+.mig-wo em { font-style: normal; font-size: 11px; color: var(--muted); }
+.mig-preview { margin-top: 6px; font-size: 12px; font-weight: 700; color: #1b6e35; }
+.mig-preview.bad { color: var(--c-danger); }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 

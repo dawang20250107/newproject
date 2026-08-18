@@ -99,6 +99,7 @@ urlpatterns = [
     path('advances/<int:pk>/writeoffs', views.advance_writeoffs),
     path('advances/<int:pk>/writeoffs/<int:wid>', views.advance_writeoff_detail),
     path('advances/<int:pk>/writeoffs/<int:wid>/migrate', views.advance_writeoff_migrate),
+    path('advances/<int:pk>/installments/migrate', views.advance_installments_migrate),
     path('advances/<int:pk>/transfers', views.advance_transfers),
     path('advances/<int:pk>/transfers/<int:tid>', views.advance_transfer_detail),
 

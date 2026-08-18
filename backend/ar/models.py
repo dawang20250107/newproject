@@ -1065,8 +1065,10 @@ class AdvanceRecord(models.Model):
         if self.pk:
             total_wo = self.writeoffs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
             total_refund = self.refunds.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-            t_in = self.transfers_in.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-            t_out = self.transfers_out.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+            t_in = (self.transfers_in.filter(kind='equity')
+                    .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            t_out = (self.transfers_out.filter(kind='equity')
+                     .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
         balance = base + t_in - t_out - total_wo - total_refund
         if balance < Decimal('0'):
             def _f(v):
@@ -1092,11 +1094,16 @@ class AdvanceRecord(models.Model):
             )
 
     def recompute_aging_base(self, save=True):
-        """账龄承袭基准 = 各转入来源的有效账龄起点最早值（来源自身也可能承袭过）。"""
+        """账龄承袭基准 = 各转入来源的有效账龄起点最早值（来源自身也可能承袭过）；
+        整笔迁移(cash_lines)按迁入收付行的最早收付日期承袭。"""
         base = None
         for t in self.transfers_in.select_related('from_advance'):
-            src = t.from_advance
-            eff = min(filter(None, [src.aging_base_date, src.occur_date]), default=None)
+            if t.kind == 'cash_lines':
+                ed = (t.detail or {}).get('earliest_date')
+                eff = _as_date(ed) if ed else None
+            else:
+                src = t.from_advance
+                eff = min(filter(None, [src.aging_base_date, src.occur_date]), default=None)
             if eff and (base is None or eff < base):
                 base = eff
         self.aging_base_date = base
@@ -1255,13 +1262,22 @@ class AdvanceTransfer(models.Model):
     余额从源记录移到目标记录，现金收付史保留在源侧（钱当时确实收/付在那里），
     现金流/区间收付统计不受影响；仅存量余额口径（recompute_derived）纳入转移项。
     目标侧账龄承袭源记录有效账龄起点（recompute_aging_base），防止转移洗白挂账。"""
+    KIND_CHOICES = [('equity', '权益划转'), ('cash_lines', '整笔迁移')]
+
     from_advance = models.ForeignKey(AdvanceRecord, on_delete=models.PROTECT,
                                      related_name='transfers_out', db_index=True)
     to_advance = models.ForeignKey(AdvanceRecord, on_delete=models.PROTECT,
                                    related_name='transfers_in', db_index=True)
+    # equity=按金额权益划转（不动现金流水，计入余额公式）；
+    # cash_lines=按笔迁移（收付/核销行物理移动到目标，余额自然随行派生，本单不计入余额公式）
+    kind = models.CharField('转移类型', max_length=12, choices=KIND_CHOICES,
+                            default='equity', db_index=True)
     amount = models.DecimalField('转移金额', max_digits=15, decimal_places=2)
     transfer_date = models.DateField('转移日期', db_index=True)
     reason = models.CharField('转移原因', max_length=200)
+    # cash_lines 载荷：{'installments': [{'id','orig_no'}...], 'writeoffs': [{'id','orig_no'}...],
+    #                  'wo_amount': '…', 'earliest_date': 'YYYY-MM-DD'}（撤销恢复与账龄承袭用）
+    detail = models.JSONField('迁移载荷', default=dict, blank=True)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_advance_transfers')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1285,11 +1301,15 @@ class AdvanceTransfer(models.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'kind': self.kind,
             'amount': str(self.amount),
             'transfer_date': str(self.transfer_date),
             'reason': self.reason,
             'from': self._side(self.from_advance),
             'to': self._side(self.to_advance),
+            'moved_installments': len((self.detail or {}).get('installments', [])),
+            'moved_writeoffs': len((self.detail or {}).get('writeoffs', [])),
+            'wo_amount': (self.detail or {}).get('wo_amount'),
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
