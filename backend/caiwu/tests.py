@@ -363,6 +363,22 @@ class CaiwuCalculationLogicTests(TestCase):
             if label in l1_names or r >= adj_start:
                 self.assertEqual(lvl(r), 0, f'行{r}「{label}」不应被标收起')
 
+    def test_operating_export_sheet_order_follows_bu_rank(self):
+        # Sheet 页签按 CFO 约定顺位：集团总部>阔展>运输>劳务>自营>多式联运>供应链
+        import io
+        import openpyxl
+        rev = self.l1[REV]
+        for bu in ('供应链事业部', '运输事业部', '集团总部', '阔展事业部'):
+            batch = ImportBatch.objects.create(
+                business_unit=bu, year=2026, month=5, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, amount=Decimal('1'))
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        self.assertEqual(wb.sheetnames, ['集团总部', '阔展事业部', '运输事业部', '供应链事业部'])
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)

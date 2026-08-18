@@ -2802,6 +2802,9 @@ _OP_DEPT_ORDER_HQ = ['总裁办', '经管中心', '销售中心', '信息中心'
 _OP_DEPT_ORDER_BU = ['总经办', '经营规划部', '运营管理部', '片区经营', '项目经营',
                      '资源拓展部', '综合部', '财务部']
 _OP_DEPT_PATTERNS = {'片区经营', '项目经营'}
+# 经营情况表 Sheet 页签（事业部）顺位（CFO 约定）
+_OP_BU_ORDER = ['集团总部', '阔展事业部', '运输事业部', '劳务事业部',
+                '自营事业部', '多式联运事业部', '供应链事业部']
 
 
 def _op_dept_rank(bu, name):
@@ -3184,7 +3187,9 @@ def report_operating_export(request):
             s = s.replace(ch, '·')
         return s[:31] or '报表'
 
-    for bu in bu_list:
+    # Sheet 页签按 CFO 约定顺位排列，未列入的排最后（保持原相对顺序）
+    _bu_rank = {b: i for i, b in enumerate(_OP_BU_ORDER)}
+    for bu in sorted(bu_list, key=lambda b: _bu_rank.get(b, len(_OP_BU_ORDER))):
         months = sorted(ImportBatch.objects.filter(
             business_unit=bu, year=year, status=ImportBatch.STATUS_PUBLISHED,
             batch_type=ImportBatch.TYPE_DEPT
