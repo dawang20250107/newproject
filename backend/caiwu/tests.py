@@ -308,6 +308,39 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertTrue(all(ws.cell(row=r, column=8).value in (None, '')
                             for r in range(3, ws.max_row + 1)))
 
+    def test_operating_export_outline_hides_quiet_last_two_months(self):
+        # 末两月均无发生的部门/明细行 → 大纲第1级（Excel「1」一键收起）；
+        # 有发生的行、调增调减区不标级
+        import io
+        import openpyxl
+        bu = '阔展事业部'
+        rev = self.l1[REV]
+        d_old = L2Category.objects.create(business_unit=bu, name='仅早期部', sort_order=1)
+        d_act = L2Category.objects.create(business_unit=bu, name='活跃部', sort_order=2)
+        for month, dept, amt in ((3, d_old, 900), (3, d_act, 100), (4, d_act, 200), (5, d_act, 700)):
+            batch = ImportBatch.objects.create(
+                business_unit=bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=dept, amount=Decimal(amt))
+
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content))[bu]
+        rowmap = {}
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if label and label not in rowmap:
+                rowmap[label] = r
+
+        def lvl(r):
+            return ws.row_dimensions[r].outline_level or 0
+        self.assertEqual(lvl(rowmap['仅早期部']), 1)      # 末两月(4,5)无发生 → 可收起
+        self.assertEqual(lvl(rowmap['活跃部']), 0)        # 5月有发生 → 常显
+        self.assertEqual(lvl(rowmap[REV]), 0)             # 一级科目不标级
+        self.assertEqual(lvl(rowmap['调整合计']), 0)      # 调整区不受影响
+        self.assertEqual(lvl(rowmap['实际经营情况']), 0)
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)

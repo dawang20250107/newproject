@@ -2952,6 +2952,13 @@ def _operating_sheet(ws, bu, year, months):
     row = 3
     l1_row = {}          # 一级科目名 → 行号
     rev_dept_row = {}    # l2k → 主营业务收入部门行（部门费销比分母）
+    # 末两月（费销比所在月）无发生的部门/明细行 → Excel 大纲第1级：
+    # 左上角级别按钮「1」一键收起全部、「2」一键展开；调整区/一级/计算行不标级
+    last2 = months[-2:]
+    hide_rows = []
+
+    def _quiet(vals_by_m):
+        return all(abs(vals_by_m.get(m, 0)) < 0.005 for m in last2)
 
     for l1 in l1_cats:
         is_exp = l1.name in _OP_RATIO_L1
@@ -3001,6 +3008,7 @@ def _operating_sheet(ws, bu, year, months):
                 ws.cell(row=dept_r, column=1, value=l2_meta[(l1.id, l2k)][0])
                 row += 1
             det_rows = []
+            det_all_quiet = True
             for key in dets:
                 dr = row
                 det_rows.append(dr)
@@ -3010,6 +3018,10 @@ def _operating_sheet(ws, bu, year, months):
                     ws.cell(row=dr, column=mcols[m], value=round(leaf[key].get(m, 0), 2))
                 put_common(dr)
                 put_ratios(dr, (rev_dept_row.get(l2k) or l1_row.get('主营业务收入')) if is_exp else None)
+                if _quiet(leaf[key]):
+                    hide_rows.append(dr)
+                else:
+                    det_all_quiet = False
                 if collapse:
                     child_rows.append(dr)
                 row += 1
@@ -3023,6 +3035,10 @@ def _operating_sheet(ws, bu, year, months):
                     ws.cell(row=dr, column=mcols[m], value=round(orphan.get(m, 0), 2))
                 put_common(dr)
                 put_ratios(dr, (rev_dept_row.get(l2k) or l1_row.get('主营业务收入')) if is_exp else None)
+                if _quiet(orphan):
+                    hide_rows.append(dr)
+                else:
+                    det_all_quiet = False
                 if collapse:
                     child_rows.append(dr)
                 row += 1
@@ -3031,6 +3047,8 @@ def _operating_sheet(ws, bu, year, months):
                     for m in months:
                         mc = L(mcols[m])
                         setf(dept_r, mcols[m], f'=SUM({mc}{det_rows[0]}:{mc}{det_rows[-1]})')
+                    if det_all_quiet:
+                        hide_rows.append(dept_r)
                 else:
                     vals = defaultdict(float)
                     for k3 in list(dets) + [(l1.id, l2k, '__none__')]:
@@ -3038,6 +3056,8 @@ def _operating_sheet(ws, bu, year, months):
                             vals[m] += v
                     for m in months:
                         ws.cell(row=dept_r, column=mcols[m], value=round(vals.get(m, 0), 2))
+                    if _quiet(vals):
+                        hide_rows.append(dept_r)
                 put_common(dept_r)
                 put_ratios(dept_r, rev_dept_row.get(l2k) if is_exp else None)
                 if l1.name == '主营业务收入':
@@ -3088,6 +3108,13 @@ def _operating_sheet(ws, bu, year, months):
             setf(final_r, mcols[m], f'={mc}{adj_sum}')
     put_common(final_r)
     put_ratios(final_r, None)
+
+    # ── 末两月无发生行 → 大纲第1级（Excel 左上角「1」一键收起 /「2」展开）──
+    if hide_rows:
+        from openpyxl.worksheet.properties import Outline
+        for r_ in hide_rows:
+            ws.row_dimensions[r_].outline_level = 1
+        ws.sheet_properties.outlinePr = Outline(summaryBelow=False, summaryRight=False)
 
     # ── 外框加重：表格四周 medium 描边 ──
     for r_ in range(2, final_r + 1):
