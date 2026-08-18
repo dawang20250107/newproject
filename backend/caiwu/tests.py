@@ -341,6 +341,24 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(lvl(rowmap['调整合计']), 0)      # 调整区不受影响
         self.assertEqual(lvl(rowmap['实际经营情况']), 0)
 
+        # 全表不变式：凡标 1 级的行，末两月（此表为 4/5 月 → F、H 列）单元格
+        # 必为 0/空/'-'；一级科目与调整区起（含）以下所有行必为 0 级
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        last2_cols = [heads.index('4月') + 1, heads.index('5月') + 1]
+        l1_names = set(L1Category.objects.values_list('name', flat=True))
+        adj_start = rowmap['调增调减明细']
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if lvl(r) == 1:
+                for c in last2_cols:
+                    v = ws.cell(row=r, column=c).value
+                    if isinstance(v, str) and v.startswith('='):
+                        continue   # 部门汇总公式：其可收起性由全部明细子行静默保证（子行已逐一校验）
+                    self.assertTrue(v in (None, '', '-', 0) or abs(float(v)) < 0.005,
+                                    f'行{r}「{label}」被标收起但末两月有值 {v!r}')
+            if label in l1_names or r >= adj_start:
+                self.assertEqual(lvl(r), 0, f'行{r}「{label}」不应被标收起')
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)
