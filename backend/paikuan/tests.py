@@ -1064,7 +1064,7 @@ class PartialScheduleTests(TestCase):
         self.assertEqual(r4.status_code, 200, r4.content)
 
     def test_close_schedule_archives_and_excludes_remaining(self):
-        """排款结案：尾款不再排 → 归档、剩余按0、列表未排合计不再计入；可撤销。"""
+        """关闭剩余排款：剩余不再执行 → 归档、剩余按0、默认列表隐藏（closed=only 可查）。"""
         self._sched('4000', '2026-07-01')          # 已排 4000 / 申请 10000
         # 结案须填原因
         r0 = self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
@@ -1081,28 +1081,34 @@ class PartialScheduleTests(TestCase):
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.archived)                    # 归档
         self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))   # 已排不动
-        # 结案记录仍留在列表（可查可撤销），但未排合计不再包含这 6000
+        # 默认列表不含已关闭记录（记录多了不堆积）；closed=only 可单独调出查看/撤销
         lst = self.client.get('/api/pk/approvals', **self.auth()).json()['data']
-        self.assertIn(self.rec.id, [r['id'] for r in lst['items']])
-        self.assertEqual(Decimal(lst['total_remaining']), Decimal('0'))
-        self.assertEqual(Decimal(lst['total_scheduled']), Decimal('4000'))
-        # 结案后不可再排款
+        self.assertNotIn(self.rec.id, [r['id'] for r in lst['items']])
+        only = self.client.get('/api/pk/approvals?closed=only', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in only['items']])
+        self.assertEqual(Decimal(only['total_remaining']), Decimal('0'))   # 剩余按0
+        self.assertEqual(Decimal(only['total_scheduled']), Decimal('4000'))
+        inc = self.client.get('/api/pk/approvals?closed=include', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in inc['items']])
+        # 关闭后不可再排款
         self.assertEqual(self._sched('1000', '2026-08-01').status_code, 409)
         pay = Payment.objects.get(approval=self.rec)
         ap = self.client.post(f'/api/pk/payments/{pay.id}/plan-items',
                               data=json.dumps({'planned_date': '2026-08-01', 'amount': '1000'}),
                               content_type='application/json', **self.auth())
         self.assertEqual(ap.status_code, 409, ap.content)
-        # 撤销结案 → 归档回退、可继续排款
+        # 撤销关闭 → 归档回退、回到默认列表、可继续排款
         ru = self.client.delete(f'/api/pk/approvals/{self.rec.id}/close-schedule', **self.auth())
         self.assertEqual(ru.status_code, 200, ru.content)
         self.rec.refresh_from_db()
         self.assertFalse(self.rec.schedule_closed)
         self.assertFalse(self.rec.archived)
+        back = self.client.get('/api/pk/approvals', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in back['items']])
         self.assertEqual(self._sched('1000', '2026-08-01').status_code, 200)
 
     def test_close_schedule_guards(self):
-        """结案守卫：排满无需结案；重复结案/未结案撤销均 409；终态审批不可结案。"""
+        """关闭守卫：排满无需关闭；重复关闭/未关闭撤销均 409；终态审批不可关闭。"""
         self._sched('10000', '2026-07-01')         # 排满 → archived
         r = self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
                              data=json.dumps({'reason': 'x'}),
@@ -1122,7 +1128,7 @@ class PartialScheduleTests(TestCase):
         self.assertEqual(r2.status_code, 409, r2.content)
 
     def test_close_survives_plan_item_reconcile(self):
-        """结案后调整已排批次（改额/撤批）触发对账，不得把归档冲掉。"""
+        """关闭后调整已排批次（改额/撤批）触发对账，不得把关闭态冲掉。"""
         self._sched('4000', '2026-07-01')
         self._sched('1000', '2026-07-15')
         self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
@@ -1135,7 +1141,7 @@ class PartialScheduleTests(TestCase):
         self.rec.refresh_from_db()
         self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))   # 已排随批次回退
         self.assertTrue(self.rec.schedule_closed)
-        self.assertTrue(self.rec.archived)                             # 结案态不被对账冲掉
+        self.assertTrue(self.rec.archived)                             # 关闭态不被对账冲掉
 
     def test_approval_bulk_delete_paid_payment_super_admin_only(self):
         """策略B补全:审批批量强删连带排款时,排款已有实付分期须仅超管可强删。"""

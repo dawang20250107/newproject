@@ -1083,8 +1083,8 @@ def payment_plan_items(request, pk):
         p = Payment.objects.select_for_update().get(pk=pk)
         if rec:
             if rec.schedule_closed:
-                return err('来源审批已「排款结案」（尾款不再排）；'
-                           '如需继续排款请先在审批管理撤销结案', 409, 409)
+                return err('来源审批已「关闭剩余排款」；'
+                           '如需继续排款请先在审批管理撤销关闭', 409, 409)
             # 只计在册付款的批次：回收站付款的批次不占用剩余可排额度
             current = (PaymentPlanItem.objects.filter(payment__approval_id=approval_id,
                                                       payment__deleted_at__isnull=True)
@@ -1909,7 +1909,7 @@ def _reconcile_approval_schedule(approval_id):
                  .filter(payment__approval_id=approval_id, payment__deleted_at__isnull=True)
                  .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
     rec.scheduled_amount = scheduled
-    # rejected/canceled 为终态，保持归档；已排款结案的记录保持归档（尾款不再排）；
+    # rejected/canceled 为终态，保持归档；已关闭剩余排款的记录保持归档；
     # 其余 approved 记录按是否排满申请金额决定归档
     if rec.status in {'rejected', 'canceled'} or rec.schedule_closed:
         rec.archived = True
@@ -2299,12 +2299,20 @@ def _approvals_filtered_qs(request):
     可见口径：仅隐藏「审批通过且已排满」的归档记录（已完全流转至付款管理）；
     已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
     archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
-    # 排满归档的 approved 记录移交付款管理、不再占审批列表；但「排款结案」的记录
-    # 是人工决策，必须留在列表可查可撤销（带结案徽标、剩余按0），否则一分钱没排
-    # 就结案的记录会彻底消失、无处撤销
+    # 排满归档的 approved 记录移交付款管理、不再占审批列表。
+    # 「排款已关闭」的记录同样默认移出列表（否则记录一多会堆积一屏未排为0的行），
+    # 但可用 closed=only 单独调出查看/撤销关闭，closed=include 则一并显示。
+    _closed_mode = (request.GET.get('closed') or '').strip().lower()
     qs = (dept_filter(ApprovalRecord.objects.all(), request)
-          .exclude(Q(status='approved') & Q(archived=True) & Q(schedule_closed=False))
+          .exclude(status='approved', archived=True)
           .filter(deleted_at__isnull=True))
+    if _closed_mode == 'only':
+        qs = (dept_filter(ApprovalRecord.objects.all(), request)
+              .filter(schedule_closed=True, deleted_at__isnull=True))
+    elif _closed_mode == 'include':
+        qs = (dept_filter(ApprovalRecord.objects.all(), request)
+              .exclude(Q(status='approved') & Q(archived=True) & Q(schedule_closed=False))
+              .filter(deleted_at__isnull=True))
     # 登记时间区间（created_at，审批进入系统的实际时间）：与其他台账的时间预设条同款
     _sd = (request.GET.get('start_date') or '').strip()
     _ed = (request.GET.get('end_date') or '').strip()
@@ -2369,7 +2377,7 @@ def approval_records(request):
         sums = live_qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
         total_amount = sums['s'] or Decimal('0')
         total_scheduled = sums['sched'] or Decimal('0')
-        # 未排合计只统计仍要排的记录：已「排款结案」的尾款不再排，不计入
+        # 未排合计只统计仍要排的记录：已「关闭剩余排款」的剩余额度不再执行，不计入
         open_sums = (live_qs.filter(schedule_closed=False)
                      .aggregate(s=Sum('amount'), sched=Sum('scheduled_amount')))
         total_remaining = ((open_sums['s'] or Decimal('0'))
@@ -2567,7 +2575,7 @@ def _schedule_one(request, rec, planned_date, total_amount):
     if rec.status != 'approved':
         return None, '仅审批通过记录可排款', 400
     if rec.schedule_closed:
-        return None, '该审批已「排款结案」（尾款不再排）；如需继续排款请先在编辑弹窗撤销结案', 409
+        return None, '该审批已「关闭剩余排款」；如需继续排款请先在编辑弹窗撤销关闭', 409
     if rec.archived:
         return None, '记录已归档', 409
     if total_amount is None or total_amount <= 0:
@@ -2978,14 +2986,15 @@ def approval_schedule_detail(request, pk):
 @csrf_exempt
 @pk_required()
 def approval_schedule_close(request, pk):
-    """POST /approvals/<pk>/close-schedule — 排款结案（尾款不再排）；DELETE 撤销结案。
+    """POST /approvals/<pk>/close-schedule — 关闭剩余排款；DELETE 撤销关闭。
 
-    场景：一笔审批常常无法排满——按实际发生额结算、业务取消、并入其他审批等，
-    剩余部分永远不会再排。结案后：记录归档、剩余可排按 0 计（列表「未排合计」与
-    关账清单不再挂着这笔尾款），已排批次与付款链路一概不动；随时可撤销结案重新排。
+    场景（对标 ERP「订单关闭」）：一笔审批常常无法排满——按实际发生额结算、
+    业务取消、并入其他审批等，剩余额度确定不再执行。关闭后：记录归档、剩余可排
+    按 0 计（列表「未排合计」与关账清单不再挂这笔剩余），已排批次与付款链路一概
+    不动；随时可撤销关闭重新排。
 
-    守卫：回收站记录不可操作；仅在途（待审批/审批通过）记录可结案；已排满无需结案；
-    须填结案原因（追溯）。撤销结案后归档状态按是否排满自动重算。"""
+    守卫：回收站记录不可操作；仅在途（待审批/审批通过）记录可关闭；已排满无需关闭；
+    须填关闭原因（追溯）。撤销关闭后归档状态按是否排满自动重算。"""
     perms = get_request_perms(request)
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
@@ -3007,18 +3016,18 @@ def approval_schedule_close(request, pk):
         rec = ApprovalRecord.objects.select_for_update().get(pk=pk)
         if request.method == 'POST':
             if rec.schedule_closed:
-                return err('该审批已结案，无需重复操作', 409, 409)
+                return err('该审批已关闭剩余排款，无需重复操作', 409, 409)
             if rec.status in {'rejected', 'canceled'}:
-                return err('已拒绝/已撤销的审批本就不再排款，无需结案', 409, 409)
+                return err('已拒绝/已撤销的审批本就不再排款，无需关闭剩余排款', 409, 409)
             reason = (parse_body(request).get('reason') or '').strip()
             if not reason:
-                return err('请填写结案原因（如：按实际发生额结算、业务取消），以便日后追溯')
+                return err('请填写关闭原因（如：按实际发生额结算、业务取消），以便日后追溯')
             live_scheduled = (PaymentPlanItem.objects
                               .filter(payment__approval_id=rec.pk,
                                       payment__deleted_at__isnull=True)
                               .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
             if live_scheduled >= (rec.amount or Decimal('0')):
-                return err('该审批已排满申请金额，无尾款可结案', 409, 409)
+                return err('该审批已排满申请金额，无剩余额度可关闭', 409, 409)
             rec.schedule_closed = True
             rec.schedule_closed_reason = reason[:200]
             rec.schedule_closed_at = timezone.now()
@@ -3029,11 +3038,11 @@ def approval_schedule_close(request, pk):
             rec.refresh_from_db()
             closed_amt = max(Decimal('0'), (rec.amount or Decimal('0')) - live_scheduled)
             return ok({**rec.to_dict(),
-                       'message': f'已结案：尾款 {closed_amt} 不再排款，记录归档'})
+                       'message': f'已关闭剩余排款 {closed_amt}，记录归档'})
 
-        # DELETE：撤销结案
+        # DELETE：撤销关闭
         if not rec.schedule_closed:
-            return err('该审批未结案', 409, 409)
+            return err('该审批未关闭剩余排款', 409, 409)
         rec.schedule_closed = False
         rec.schedule_closed_reason = ''
         rec.schedule_closed_at = None
@@ -3042,7 +3051,7 @@ def approval_schedule_close(request, pk):
                                 'schedule_closed_at', 'schedule_closed_by', 'updated_at'])
         _reconcile_approval_schedule(rec.pk)
         rec.refresh_from_db()
-    return ok({**rec.to_dict(), 'message': '已撤销结案，可继续排款'})
+    return ok({**rec.to_dict(), 'message': '已撤销关闭，可继续排款'})
 
 
 @csrf_exempt

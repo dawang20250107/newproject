@@ -201,7 +201,14 @@ function buildParams() {
   if (numbersFilter.value) p.numbers = numbersFilter.value
   if (dateStart.value) p.start_date = dateStart.value
   if (dateEnd.value) p.end_date = dateEnd.value
+  if (closedView.value) p.closed = closedView.value   // only=只看已关闭排款
   return p
+}
+// 已关闭剩余排款的记录默认移出列表（避免堆积）；此开关可单独调出查看/撤销
+const closedView = ref('')
+function toggleClosedView(){
+  closedView.value = closedView.value === 'only' ? '' : 'only'
+  page.value = 1; clearSelection(); load()
 }
 let _qTimer = null
 watch(() => q.value, () => {
@@ -640,24 +647,24 @@ async function addEditPlanItem(){
 
 async function doCloseSchedule(){
   if (closeForm.busy || !editId.value) return
-  if (!closeForm.reason.trim()) { toast.warn('请填写结案原因，以便日后追溯'); return }
+  if (!closeForm.reason.trim()) { toast.warn('请填写关闭原因，以便日后追溯'); return }
   closeForm.busy = true
   try {
     const r = await api.post(`/approvals/${editId.value}/close-schedule`, { reason: closeForm.reason })
-    toast.success(r.data?.message || '已结案')
+    toast.success(r.data?.message || '已关闭剩余排款')
     if (r.data) editRec.value = r.data
     Object.assign(closeForm, { reason:'', show:false })
     await refreshEditRec()
-  } catch(e){ toast.error(e?.msg||e?.error||'结案失败') } finally { closeForm.busy = false }
+  } catch(e){ toast.error(e?.msg||e?.error||'关闭失败') } finally { closeForm.busy = false }
 }
 
 async function undoCloseSchedule(){
   if (closeForm.busy || !editId.value) return
-  if (!(await confirmDlg('撤销结案？该审批将回到可排款状态，剩余金额重新计入未排合计。'))) return
+  if (!(await confirmDlg('撤销关闭？该审批将回到可排款状态并回到审批列表，剩余额度重新计入未排合计。'))) return
   closeForm.busy = true
   try {
     const r = await api.delete(`/approvals/${editId.value}/close-schedule`)
-    toast.success(r.data?.message || '已撤销结案')
+    toast.success(r.data?.message || '已撤销关闭')
     if (r.data) editRec.value = r.data
     await refreshEditRec()
   } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally { closeForm.busy = false }
@@ -751,7 +758,12 @@ const ctxItems = computed(() => {
       hint: isDingtalkNo(i.approval_number) ? '' : '审批编号非21位钉钉编号',
       action: r => dingtalkStatusSync([r.id]),
     },
-    { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
+    // 归档记录禁编辑；但「排款已关闭」是人工可逆决策——必须能进弹窗撤销关闭/调排款批次
+    { key: 'edit', label: i.schedule_closed ? '编辑排款计划 / 撤销关闭' : '编辑审批记录',
+      icon: 'edit', shortcut: 'E', hidden: !auth.canCreate,
+      disabled: i.archived && !i.schedule_closed, action: r => openEdit(r) },
+    { key: 'reopen', label: '撤销关闭排款', icon: 'refresh', hidden: !auth.canCreate || !i.schedule_closed,
+      action: r => { editId.value = r.id; editRec.value = r; undoCloseSchedule().then(() => { editId.value = null; editRec.value = null }) } },
     { key: 'clone', label: '以此新建', icon: 'copy', hidden: !auth.canCreate, action: r => createFrom(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
     { key: 'del', label: '删除审批记录', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteOne(r) },
@@ -1044,6 +1056,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
   </div>
+  <div class="apr-closed-bar">
+    <button class="cv-chip" :class="{ on: closedView === 'only' }"
+            title="已「关闭剩余排款」的审批默认不在列表中；点此单独查看，可在编辑弹窗撤销关闭"
+            @click="toggleClosedView">{{ closedView === 'only' ? '✕ 退出：只看排款已关闭' : '只看排款已关闭' }}</button>
+    <span v-if="closedView === 'only'" class="cv-tip">这些审批的剩余额度已确定不再执行，不计入未排合计</span>
+  </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <div v-if="filterChips.length" class="chips-row">
     <span v-for="c in filterChips" :key="c.key" class="fchip">
@@ -1110,7 +1128,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </div>
       </td>
       <td class="amt" :title="fmtMoney(i.amount)">{{ fmtMoney(i.amount) }}</td>
-      <td class="amt sched-c plan-cell" :title="i.schedule_closed ? `尾款已结案：${i.schedule_closed_reason || ''}` : (parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : '')"
+      <td class="amt sched-c plan-cell" :title="i.schedule_closed ? `排款已关闭：${i.schedule_closed_reason || ''}` : (parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : '')"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
           {{ fmtMoney(i.scheduled_amount) }}
@@ -1228,10 +1246,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="ep-head">
       <span class="ep-title">排款计划</span>
       <span class="ep-sum">申请 <b>¥{{ editRec?.amount || form.amount }}</b> · 已排 <b class="ok">¥{{ editScheduled.toFixed(2) }}</b> ·
-        <template v-if="editClosed">尾款 <b class="closed">¥{{ editUnscheduled.toFixed(2) }}</b> 已结案不再排</template>
+        <template v-if="editClosed">剩余 <b class="closed">¥{{ editUnscheduled.toFixed(2) }}</b> 已关闭不再排</template>
         <template v-else>剩余可排 <b class="warn">¥{{ editUnscheduled.toFixed(2) }}</b></template>
       </span>
-      <span v-if="editClosed" class="ep-closed-tag" :title="`结案原因：${editRec?.schedule_closed_reason || '—'}`">已结案</span>
+      <span v-if="editClosed" class="ep-closed-tag" :title="`关闭原因：${editRec?.schedule_closed_reason || '—'}`">排款已关闭</span>
     </div>
 
     <div v-if="editSched?.loading" class="ep-tip">加载中…</div>
@@ -1269,19 +1287,19 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button class="ep-btn primary" :disabled="aprAddPlan.busy" @click="addEditPlanItem">
           {{ aprAddPlan.busy ? '…' : (editPlanItems.length ? '＋ 追加批次' : '＋ 排第一批') }}
         </button>
-        <button class="ep-btn" title="剩余部分确定不再排款（如按实际发生额结算/业务取消）" @click="closeForm.show = !closeForm.show">尾款结案…</button>
+        <button class="ep-btn" title="剩余额度确定不再执行（如按实际发生额结算/业务取消），对标 ERP「订单关闭」" @click="closeForm.show = !closeForm.show">关闭剩余排款…</button>
       </div>
 
       <!-- 结案 / 撤销结案 -->
       <div v-if="closeForm.show && !editClosed" class="ep-close-box">
-        <input v-model="closeForm.reason" class="ep-inp ep-reason" maxlength="200" placeholder="结案原因（必填，如：按实际发生额结算 / 业务取消）" />
-        <button class="ep-btn primary" :disabled="closeForm.busy" @click="doCloseSchedule">确认结案 ¥{{ editUnscheduled.toFixed(2) }}</button>
+        <input v-model="closeForm.reason" class="ep-inp ep-reason" maxlength="200" placeholder="关闭原因（必填，如：按实际发生额结算 / 业务取消 / 并入其他审批）" />
+        <button class="ep-btn primary" :disabled="closeForm.busy" @click="doCloseSchedule">确认关闭 ¥{{ editUnscheduled.toFixed(2) }}</button>
         <button class="ep-btn" @click="closeForm.show = false">取消</button>
-        <div class="ep-tip">结案后：记录归档、剩余按 0 计（不再进入「未排合计」与关账清单），已排批次与付款不受影响；随时可撤销。</div>
+        <div class="ep-tip">关闭后：记录归档并移出审批列表（可用「只看排款已关闭」调出）、剩余按 0 计（不再进入「未排合计」与关账清单），已排批次与付款不受影响；随时可撤销。</div>
       </div>
       <div v-if="editClosed" class="ep-close-box closed">
-        <span class="ep-tip">已结案：{{ editRec?.schedule_closed_reason }}<template v-if="editRec?.schedule_closed_by"> · {{ editRec.schedule_closed_by }}</template></span>
-        <button v-if="auth.canCreate" class="ep-btn" :disabled="closeForm.busy" @click="undoCloseSchedule">撤销结案</button>
+        <span class="ep-tip">排款已关闭：{{ editRec?.schedule_closed_reason }}<template v-if="editRec?.schedule_closed_by"> · {{ editRec.schedule_closed_by }}</template></span>
+        <button v-if="auth.canCreate" class="ep-btn" :disabled="closeForm.busy" @click="undoCloseSchedule">撤销关闭</button>
       </div>
     </template>
   </div>
@@ -1578,6 +1596,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
+.apr-closed-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+.cv-chip { border: 1px dashed var(--border); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+.cv-chip:hover { border-color: var(--primary); color: var(--primary); }
+.cv-chip.on { border-style: solid; border-color: var(--primary); color: var(--primary);
+  background: rgba(201,99,66,0.07); font-weight: 700; }
+.cv-tip { font-size: 11.5px; color: var(--muted); }
+
 /* 编辑弹窗内的排款计划区 */
 .ep-sec { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
 .ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
