@@ -589,7 +589,79 @@ const apprNoInputRef = ref(null)
 function openCreate(){ editId.value=null; contSaved.value=0; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
-function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
+function openEdit(it){ editId.value=it.id; editRec.value = it; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true
+  // 编辑弹窗内嵌「排款计划」：与行内展开面板同一份数据/接口（单一正源）
+  Object.assign(aprAddPlan, { planned_date:'', amount:'', notes:'', busy:false })
+  Object.assign(closeForm, { reason:'', busy:false, show:false })
+  loadAprSchedDetail(it.id)
+}
+// ── 编辑弹窗内的排款计划：追加批次 / 结案 ────────────────────────────────────
+const editRec = ref(null)
+const aprAddPlan = reactive({ planned_date:'', amount:'', notes:'', busy:false })
+const closeForm = reactive({ reason:'', busy:false, show:false })
+const editSched = computed(() => (editId.value ? aprSchedCache.value[editId.value] : null))
+const editPlanItems = computed(() => editSched.value?.data?.plan_items || [])
+const editScheduled = computed(() => editPlanItems.value.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0))
+const editUnscheduled = computed(() => {
+  const amt = parseFloat(editRec.value?.amount || form.amount || 0) || 0
+  return +(amt - editScheduled.value).toFixed(2)
+})
+const editClosed = computed(() => !!editRec.value?.schedule_closed)
+
+async function refreshEditRec(){
+  if (!editId.value) return
+  await loadAprSchedDetail(editId.value)
+  await load()
+  // 列表刷新后回读本条最新快照（已排/剩余/结案态随之更新）
+  const hit = items.value.find(x => x.id === editId.value)
+  if (hit) editRec.value = hit
+}
+
+async function addEditPlanItem(){
+  if (aprAddPlan.busy || !editId.value) return
+  const amt = parseFloat(aprAddPlan.amount)
+  if (!aprAddPlan.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  if (amt > editUnscheduled.value + 0.005) { toast.warn(`本批 ${amt} 超过剩余可排 ${editUnscheduled.value}`); return }
+  aprAddPlan.busy = true
+  try {
+    const pid = editSched.value?.data?.payment_id
+    if (pid) {
+      await api.post(`/payments/${pid}/plan-items`, { planned_date: aprAddPlan.planned_date, amount: amt, notes: aprAddPlan.notes })
+    } else {
+      // 尚未排过款：走审批排款入口（建付款汇总 + 首批计划）
+      await api.post(`/approvals/${editId.value}/schedule`, { planned_date: aprAddPlan.planned_date, total_amount: amt })
+    }
+    toast.success('已追加排款批次')
+    Object.assign(aprAddPlan, { planned_date:'', amount:'', notes:'' })
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'追加失败') } finally { aprAddPlan.busy = false }
+}
+
+async function doCloseSchedule(){
+  if (closeForm.busy || !editId.value) return
+  if (!closeForm.reason.trim()) { toast.warn('请填写结案原因，以便日后追溯'); return }
+  closeForm.busy = true
+  try {
+    const r = await api.post(`/approvals/${editId.value}/close-schedule`, { reason: closeForm.reason })
+    toast.success(r.data?.message || '已结案')
+    if (r.data) editRec.value = r.data
+    Object.assign(closeForm, { reason:'', show:false })
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'结案失败') } finally { closeForm.busy = false }
+}
+
+async function undoCloseSchedule(){
+  if (closeForm.busy || !editId.value) return
+  if (!(await confirmDlg('撤销结案？该审批将回到可排款状态，剩余金额重新计入未排合计。'))) return
+  closeForm.busy = true
+  try {
+    const r = await api.delete(`/approvals/${editId.value}/close-schedule`)
+    toast.success(r.data?.message || '已撤销结案')
+    if (r.data) editRec.value = r.data
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally { closeForm.busy = false }
+}
 const contSaved = ref(0)
 async function create(andContinue = false){
   if(saving.value) return; saving.value=true
@@ -1038,7 +1110,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </div>
       </td>
       <td class="amt" :title="fmtMoney(i.amount)">{{ fmtMoney(i.amount) }}</td>
-      <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
+      <td class="amt sched-c plan-cell" :title="i.schedule_closed ? `尾款已结案：${i.schedule_closed_reason || ''}` : (parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : '')"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
           {{ fmtMoney(i.scheduled_amount) }}
@@ -1135,7 +1207,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay" tabindex="-1" @keyup.escape.capture="showCreate = false"><div class="modal-box"><div class="modal-header"><h3>{{ editId ? '编辑审批记录' : '新增审批记录' }}</h3></div><div class="modal-body">
     <p v-if="editId" style="font-size:12px;color:var(--muted);margin:0 0 12px">
-      申请金额仅「待审批」状态可改（已审批请先退回待审批）；设为「审批通过/已拒绝」需审批权限；已排款/已归档记录不可在此编辑。
+      申请金额仅「待审批」状态可改（已审批请先退回待审批，且不得低于已排款）；设为「审批通过/已拒绝」需审批权限；已归档记录的审批字段不可改，但下方排款计划仍可调整。
     </p>
     <div class="form-grid">
     <label class="form-field"><span>申请人*</span><input ref="applicantInputRef" v-model="form.applicant"/></label>
@@ -1149,7 +1221,71 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
+  </div>
+
+  <!-- 排款计划（编辑态）：分批排款调整就在这里，不必再去付款管理 -->
+  <div v-if="editId" class="ep-sec">
+    <div class="ep-head">
+      <span class="ep-title">排款计划</span>
+      <span class="ep-sum">申请 <b>¥{{ editRec?.amount || form.amount }}</b> · 已排 <b class="ok">¥{{ editScheduled.toFixed(2) }}</b> ·
+        <template v-if="editClosed">尾款 <b class="closed">¥{{ editUnscheduled.toFixed(2) }}</b> 已结案不再排</template>
+        <template v-else>剩余可排 <b class="warn">¥{{ editUnscheduled.toFixed(2) }}</b></template>
+      </span>
+      <span v-if="editClosed" class="ep-closed-tag" :title="`结案原因：${editRec?.schedule_closed_reason || '—'}`">已结案</span>
+    </div>
+
+    <div v-if="editSched?.loading" class="ep-tip">加载中…</div>
+    <template v-else>
+      <div v-if="editPlanItems.length" class="ep-list">
+        <div v-for="pi in editPlanItems" :key="pi.id" class="ep-item">
+          <template v-if="aprPlanEdit.id === pi.id && aprPlanEdit.approval_id === editId">
+            <span class="ep-seq">第{{ pi.seq }}批</span>
+            <input v-model="aprPlanEdit.planned_date" type="date" class="ep-inp" />
+            <input v-model="aprPlanEdit.amount" type="number" step="0.01" class="ep-inp ep-amt" placeholder="金额" />
+            <input v-model="aprPlanEdit.notes" type="text" class="ep-inp ep-note" placeholder="备注" />
+            <button class="ep-btn primary" :disabled="aprPlanEdit.busy" @click="saveAprPlanEdit(editId).then(refreshEditRec)">保存</button>
+            <button class="ep-btn" :disabled="aprPlanEdit.busy" @click="cancelAprPlanEdit">取消</button>
+          </template>
+          <template v-else>
+            <span class="ep-seq">第{{ pi.seq }}批</span>
+            <span class="ep-date">{{ pi.planned_date }}</span>
+            <b class="ep-money">¥{{ pi.amount }}</b>
+            <span class="ep-note-txt" :title="pi.notes">{{ pi.notes }}</span>
+            <template v-if="auth.canCreate && !aprPlanEdit.id">
+              <button class="ep-btn" title="调整该批次的计划日期/金额/备注" @click="startAprPlanEdit(editId, pi)">编辑</button>
+              <button v-if="editPlanItems.length > 1" class="ep-btn danger" title="撤回该批次（已排款同步扣减）"
+                      @click="removeAprPlanItem(editId, pi).then(refreshEditRec)">撤回</button>
+            </template>
+          </template>
+        </div>
+      </div>
+      <div v-else class="ep-tip">尚未排款——可在下方直接排第一批</div>
+
+      <!-- 追加批次：一笔款排不满时分批往下排 -->
+      <div v-if="auth.canCreate && !editClosed && editUnscheduled > 0" class="ep-add">
+        <input v-model="aprAddPlan.planned_date" type="date" class="ep-inp" />
+        <input v-model="aprAddPlan.amount" type="number" step="0.01" class="ep-inp ep-amt" :placeholder="`金额 ≤ ${editUnscheduled.toFixed(2)}`" />
+        <input v-model="aprAddPlan.notes" type="text" class="ep-inp ep-note" placeholder="备注（选填）" />
+        <button class="ep-btn primary" :disabled="aprAddPlan.busy" @click="addEditPlanItem">
+          {{ aprAddPlan.busy ? '…' : (editPlanItems.length ? '＋ 追加批次' : '＋ 排第一批') }}
+        </button>
+        <button class="ep-btn" title="剩余部分确定不再排款（如按实际发生额结算/业务取消）" @click="closeForm.show = !closeForm.show">尾款结案…</button>
+      </div>
+
+      <!-- 结案 / 撤销结案 -->
+      <div v-if="closeForm.show && !editClosed" class="ep-close-box">
+        <input v-model="closeForm.reason" class="ep-inp ep-reason" maxlength="200" placeholder="结案原因（必填，如：按实际发生额结算 / 业务取消）" />
+        <button class="ep-btn primary" :disabled="closeForm.busy" @click="doCloseSchedule">确认结案 ¥{{ editUnscheduled.toFixed(2) }}</button>
+        <button class="ep-btn" @click="closeForm.show = false">取消</button>
+        <div class="ep-tip">结案后：记录归档、剩余按 0 计（不再进入「未排合计」与关账清单），已排批次与付款不受影响；随时可撤销。</div>
+      </div>
+      <div v-if="editClosed" class="ep-close-box closed">
+        <span class="ep-tip">已结案：{{ editRec?.schedule_closed_reason }}<template v-if="editRec?.schedule_closed_by"> · {{ editRec.schedule_closed_by }}</template></span>
+        <button v-if="auth.canCreate" class="ep-btn" :disabled="closeForm.busy" @click="undoCloseSchedule">撤销结案</button>
+      </div>
+    </template>
+  </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
     <div class="sched-progress">
@@ -1442,6 +1578,35 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
+/* 编辑弹窗内的排款计划区 */
+.ep-sec { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+.ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.ep-title { font-size: 13px; font-weight: 700; }
+.ep-sum { font-size: 12px; color: var(--muted); }
+.ep-sum b { color: var(--text); }
+.ep-sum b.ok { color: var(--c-success); }
+.ep-sum b.warn { color: var(--c-warn); }
+.ep-sum b.closed { color: var(--muted); text-decoration: line-through; }
+.ep-closed-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: rgba(120,120,120,0.14); color: var(--muted); }
+.ep-list { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; }
+.ep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.ep-seq { font-weight: 700; color: var(--muted); flex-shrink: 0; }
+.ep-date { color: var(--muted); }
+.ep-money { font-weight: 800; }
+.ep-note-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ep-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.ep-inp { border: 1px solid var(--border); border-radius: 7px; padding: 4px 8px; font-size: 12px; font-family: inherit; }
+.ep-amt { width: 130px; } .ep-note { flex: 1; min-width: 120px; } .ep-reason { flex: 1; min-width: 220px; }
+.ep-btn { border: 1px solid var(--border); background: var(--row-bg); border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ep-btn:hover { border-color: var(--primary); color: var(--primary); }
+.ep-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
+.ep-btn.danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
+.ep-btn:disabled { opacity: .55; cursor: default; }
+.ep-close-box { margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.ep-close-box.closed { background: rgba(120,120,120,0.05); }
+.ep-tip { font-size: 11.5px; color: var(--muted); }
+.ep-close-box .ep-tip { width: 100%; }
+
 .apr-plan-detail { background: #faf8f6; border-top: 1px solid var(--border); padding: 10px 16px 12px; }
 .apd-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .apd-head i { font-style: normal; color: var(--c-info); font-size: 11px; }
