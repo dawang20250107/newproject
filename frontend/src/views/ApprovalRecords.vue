@@ -1052,15 +1052,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
   </div>
   <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
+  <!-- 登记时间预设条：右端并入「排款已关闭」视图开关（同为列表范围筛选，不另占行） -->
   <div class="apr-timebar">
     <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
-  </div>
-  <div class="apr-closed-bar">
     <button class="cv-chip" :class="{ on: closedView === 'only' }"
-            title="已「关闭剩余排款」的审批默认不在列表中；点此单独查看，可在编辑弹窗撤销关闭"
-            @click="toggleClosedView">{{ closedView === 'only' ? '✕ 退出：只看排款已关闭' : '只看排款已关闭' }}</button>
-    <span v-if="closedView === 'only'" class="cv-tip">这些审批的剩余额度已确定不再执行，不计入未排合计</span>
+            :title="closedView === 'only'
+              ? '当前只显示已关闭剩余排款的审批（剩余额度不再执行，不计入未排合计）；点此返回常规列表'
+              : '已「关闭剩余排款」的审批默认不在列表中；点此单独查看，可右键撤销关闭'"
+            @click="toggleClosedView">{{ closedView === 'only' ? '✕ 排款已关闭' : '排款已关闭' }}</button>
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <div v-if="filterChips.length" class="chips-row">
@@ -1420,7 +1420,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 .err-banner { background: var(--c-warn-bg); border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--c-warn); display: flex; align-items: center; gap: 8px; }
-.apr-timebar { padding: 2px 0 8px; }
+.apr-timebar { padding: 2px 0 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.apr-timebar > :first-child { flex: 1 1 auto; min-width: 0; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
@@ -1596,13 +1597,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
-.apr-closed-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
-.cv-chip { border: 1px dashed var(--border); background: transparent; color: var(--muted);
-  border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+/* 「排款已关闭」视图开关：贴在登记时间条右端，与日期预设 chip 同高同形 */
+.cv-chip { margin-left: auto; flex-shrink: 0; align-self: center;
+  border: 1px dashed var(--border); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 3px 12px; font-size: 12px; line-height: 18px; cursor: pointer; }
 .cv-chip:hover { border-color: var(--primary); color: var(--primary); }
 .cv-chip.on { border-style: solid; border-color: var(--primary); color: var(--primary);
   background: rgba(201,99,66,0.07); font-weight: 700; }
-.cv-tip { font-size: 11.5px; color: var(--muted); }
 
 /* 编辑弹窗内的排款计划区 */
 .ep-sec { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
