@@ -1288,7 +1288,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button class="ep-btn primary" :disabled="aprAddPlan.busy" @click="addEditPlanItem">
           {{ aprAddPlan.busy ? '…' : (editPlanItems.length ? '＋ 追加批次' : '＋ 排第一批') }}
         </button>
-        <button class="ep-btn" title="剩余额度确定不再执行（如按实际发生额结算/业务取消），对标 ERP「订单关闭」" @click="closeForm.show = !closeForm.show">关闭剩余排款…</button>
+        <button class="ep-btn" title="剩余额度确定不再执行时关闭（如按实际发生额结算、业务取消、并入其他审批）；关闭后不计入未排合计，可撤销" @click="closeForm.show = !closeForm.show">关闭剩余排款…</button>
       </div>
 
       <!-- 结案 / 撤销结案 -->

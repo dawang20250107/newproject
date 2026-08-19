@@ -1607,7 +1607,7 @@ onMounted(async () => {
               <td>{{ w.notes || '—' }}</td>
               <td v-if="canDelete || canWoAction">
                 <button v-if="!w.ar_record_id && !w.payment_id && (canCreate || canTransferAction)"
-                        class="lnk" title="核销挂错记录时迁移到另一条同方向记录" @click="openMigrate(w)">迁移</button>
+                        class="lnk" title="核销登记至错误记录时，将其转至另一条同方向记录" @click="openMigrate(w)">迁移</button>
                 <button class="lnk danger" @click="delWriteoff(w)">删除</button>
               </td>
             </tr>
@@ -1697,7 +1697,7 @@ onMounted(async () => {
                 <td>{{ i.occur_date }}</td>
                 <td>{{ i.notes || '—' }}</td>
                 <td v-if="canCreate || canInstAction">
-                  <button v-if="canCreate || canTransferAction" class="lnk" title="这笔收付记错对象？整笔迁移到另一条记录（现金流水随行）" @click="openInstMigrate(i)">迁移</button>
+                  <button v-if="canCreate || canTransferAction" class="lnk" title="该笔收付登记至错误的往来单位/项目时，整笔转至目标记录（收付流水随之调整）" @click="openInstMigrate(i)">迁移</button>
                   <button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button>
                 </td>
               </tr>
@@ -1705,7 +1705,7 @@ onMounted(async () => {
           </table>
         </div>
         <div v-if="transferList.tout.length || transferList.tin.length" class="tr-sec">
-          <div class="tr-sec-head">转移记录<i>权益重分类，非现金，不计入收付流水</i></div>
+          <div class="tr-sec-head">转移记录<i>仅调整款项归属，不构成收付，不计入收付流水</i></div>
           <div v-for="t in transferList.tout" :key="'o' + t.id" class="tr-item">
             <span class="tr-kind" :class="{ cash: t.kind === 'cash_lines' }">{{ t.kind === 'cash_lines' ? '整笔' : '权益' }}</span>
             <b class="tr-amt-out">−{{ fmtAmt(t.amount) }}</b>
@@ -1736,7 +1736,7 @@ onMounted(async () => {
             <h4 v-if="migInsts.length === 1">⇄ 整笔迁移<span class="ia-sub">第{{ migInsts[0].install_no }}笔 {{ fmtAmt(migInsts[0].amount) }} · {{ migInsts[0].occur_date }}</span></h4>
             <h4 v-else-if="migInsts.length">⇄ 批量迁移<span class="ia-sub">{{ migInsts.length }} 笔 · 合计 {{ fmtAmt(migAmt) }}</span></h4>
             <h4 v-else>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
-            <div v-if="migInsts.length" class="mig-info">收付日期与金额整笔随迁，现金口径同步更正（区别于按金额的权益划转）</div>
+            <div v-if="migInsts.length" class="mig-info">收付日期与金额原样转至目标记录，收付口径同步更正（区别于仅调整归属的权益转移）</div>
             <label v-if="!migInsts.length" class="ia-fld">
               <span>转移金额 <em>*</em>
                 <button type="button" class="wo-fill-chip" style="margin-left:6px"
@@ -1791,7 +1791,7 @@ onMounted(async () => {
                 </div>
               </template>
             </div>
-            <p class="ia-hint">{{ migInsts.length ? '整笔迁移：收付流水物理移动到目标，已核销部分同步平移（自动拆行），账龄按收付日承袭；可整单撤销' : '转移是权益重分类：不产生现金流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
+            <p class="ia-hint">{{ migInsts.length ? '整笔迁移：该笔收付连同其已核销部分一并转到目标单位/项目，收付日期与账龄不变；可整单撤销' : '权益转移：仅调整款项归属，不产生收付流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
             <div class="ia-foot">
               <button class="btn btn-ghost btn-sm" @click="showTransfer = false">取消</button>
               <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : (migInsts.length ? '确认迁移' : '确认转移') }}</button>
@@ -1815,7 +1815,7 @@ onMounted(async () => {
               <span>备注</span>
               <input v-model="instForm.notes" class="inp" placeholder="如：第二笔预付款" />
             </label>
-            <p class="ia-hint">Enter 保存 · Esc 取消 · 总额与未核销余额自动派生</p>
+            <p class="ia-hint">Enter 保存 · Esc 取消 · 总额与未核销余额自动更新</p>
             <div class="ia-foot">
               <button class="btn btn-ghost btn-sm" @click="showInstAdd = false">取消</button>
               <button class="btn btn-ghost btn-sm" :disabled="instBusy" @click="saveInstAdd(true)">保存并继续</button>
