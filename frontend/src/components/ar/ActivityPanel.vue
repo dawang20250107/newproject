@@ -591,7 +591,7 @@ function onKey(e) {
             <span class="ai-cell"><i>客户</i><b>{{ rec.customer_name || '—' }}</b></span>
             <span class="ai-cell"><i>部门</i><b>{{ rec.delivery_dept || '—' }}</b></span>
             <span class="ai-cell"><i>到期</i><b :class="{ 'ai-danger': overdueDays > 0 }">{{ rec.due_date || '—' }}</b></span>
-            <span class="ai-cell"><i>PM</i><b>{{ rec.project_manager || '—' }}</b></span>
+            <span class="ai-cell"><i>负责人</i><b>{{ rec.project_manager || '—' }}</b></span>
             <span class="ai-cell"><i>开票方式</i><b>{{ rec.invoice_mode || '—' }}</b></span>
           </div>
           <div class="ap-info-note">

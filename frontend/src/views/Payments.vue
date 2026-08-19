@@ -829,7 +829,7 @@ async function returnPayment(p) {
   // 快捷路径：单批且无实付 → 整单退回
   const label = payLabel(p)
   const approvalHint = p.approval_id ? `\n来源审批已排款将归零（¥${p.total_amount}），可重新排款。` : ''
-  if (!(await confirmDlg(`退回排款「${label}」（计划 ¥${p.total_amount}）？${approvalHint}\n此操作不可撤销。`))) return
+  if (!(await confirmDlg(`退回排款「${label}」（计划 ¥${p.total_amount}）？${approvalHint}\n退回后记录移入回收站，可在回收站还原。`))) return
   try {
     await api.delete(`/payments/${p.id}`)
     toast.success('已退回排款，来源审批已排款同步归零')
@@ -1936,7 +1936,7 @@ async function doBatchPay() {
         <div class="modal" style="width:420px">
           <div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条排款</h3><button class="modal-close" @click="showDelConfirm = false">×</button></div>
           <div style="padding:4px 2px 0">
-            <p class="del-warn">⚠ 删除后不可恢复；已关联预付核销的记录将自动跳过。</p>
+            <p class="del-warn">⚠ 删除后移入回收站，可在回收站还原；已关联预付核销的记录将自动跳过。</p>
             <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
             <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete" />
           </div>

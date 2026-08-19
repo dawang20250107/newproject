@@ -531,7 +531,7 @@ async function saveAndNext() {
   finally { saving.value = false }
 }
 async function removeRec(rec) {
-  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，系统将拦截——需先在「核销」明细删除核销、或在日常收款解除退款关联。`))) return
+  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，将无法删除；请先在「核销」明细中删除核销记录，或在日常收款中解除退款关联。`))) return
   try { await ar.deleteAdvance(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -633,7 +633,7 @@ function instAddMaskClick() {
 }
 async function saveInstAdd(stay = false) {
   if (instBusy.value) return
-  if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为0（可负=退回）'); return }
+  if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为 0；如为退回，请填写负数'); return }
   if (!instForm.occur_date) { toast.error('请选择收付日期'); return }
   instBusy.value = true
   try {
@@ -1174,7 +1174,7 @@ onMounted(async () => {
       <div>
         <h1>预收预付</h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，并打通现金流
+          围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，收付自动计入现金流
         </div>
       </div>
     </div>
@@ -1601,7 +1601,7 @@ onMounted(async () => {
               <td>{{ w.writeoff_date }}</td>
               <td>
                 <span v-if="w.ar_record_id" class="offset-badge" :title="`已生成预收抵扣回款 · ${w.ar_project_no || ''}`">↳ 转回款</span>
-                <span v-else-if="w.payment_id" class="offset-badge pay-badge" :title="`关联排款: ${w.payment_payee || ''}`">↳ 排款#{{ w.payment_id }}</span>
+                <span v-else-if="w.payment_id" class="offset-badge pay-badge" :title="`关联排款: ${w.payment_payee || ''}`">↳ 抵排款</span>
                 <span v-else>—</span>
               </td>
               <td>{{ w.notes || '—' }}</td>
@@ -1724,7 +1724,7 @@ onMounted(async () => {
           </div>
         </div>
         <p class="inst-note">
-          与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
+          与应收的多次回款一致：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额按明细自动汇总；删除某笔后总额相应减少——若减少后低于已核销金额将无法删除，请先删除对应核销。
         </p>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showInstModal = false">关闭</button>
@@ -1751,7 +1751,7 @@ onMounted(async () => {
                 <label :class="{ active: migCarry === 'none' }"><input v-model="migCarry" type="radio" value="none" />仅迁收付</label>
               </div>
               <div class="mig-preview" :class="{ bad: migSrcAfter < 0 }">
-                <template v-if="migCarry === 'auto'">自动随迁核销 {{ fmtAmt(migCarryAmt) }} · </template>迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：可自动随迁的纯登记核销不足，请先撤销对应关联核销）</template>
+                <template v-if="migCarry === 'auto'">自动随迁核销 {{ fmtAmt(migCarryAmt) }} · </template>迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：未关联回款/排款的核销不足以随迁，请先撤销已关联的核销）</template>
               </div>
             </div>
             <label class="ia-fld">
@@ -1805,7 +1805,7 @@ onMounted(async () => {
             <h4>新增{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 第 {{ instList.length + 1 }} 笔</span></h4>
             <label class="ia-fld">
               <span>收付金额 <em>*</em></span>
-              <input ref="instAmtInput" v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="元，负数=退回" />
+              <input ref="instAmtInput" v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="金额（元），退回填负数" />
             </label>
             <label class="ia-fld">
               <span>收付日期 <em>*</em></span>

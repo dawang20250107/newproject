@@ -341,7 +341,7 @@ onMounted(() => {
     <template v-else>
     <div class="cw-hero">
       <div>
-        <div class="cw-eyebrow">DATA PIPELINE · 采集加工</div>
+        <div class="cw-eyebrow">FINANCIAL DATA · 采集加工</div>
         <h1>数据加工</h1>
         <div class="cw-hero-sub">上传金蝶部门明细表 · 核对利润指标 · 发布到报表</div>
       </div>
@@ -439,7 +439,7 @@ onMounted(() => {
               title="撤回后报表不再显示该期间数据，批次回到草稿可删除" @click="doUnpublish(b)">撤回</button>
             <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
             <button v-if="auth.canDelete && (b.status === 'draft' || auth.isAdmin)" class="btn btn-danger btn-sm"
-              :title="b.status === 'published' ? '超管强删；常规路径：先撤回再删除' : ''" @click="doDelete(b)">删除</button>
+              :title="b.status === 'published' ? '已发布批次仅超级管理员可直接删除；建议先撤回再删除' : ''" @click="doDelete(b)">删除</button>
           </span>
         </div>
         </template>
@@ -511,7 +511,7 @@ onMounted(() => {
               </template>
               <template v-else>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <span>点击选择或拖入部门明细表文件（.xlsx，或 .json 数组格式）</span>
+                <span>点击选择或拖入部门明细表文件（支持 Excel 表格，或系统导出的 .json 文件）</span>
               </template>
             </label>
 
@@ -567,7 +567,7 @@ onMounted(() => {
               </div>
 
               <!-- ── 明细预览 ── -->
-              <div class="section-title" style="margin:16px 0 10px">明细预览（存入数据库的3张表）</div>
+              <div class="section-title" style="margin:16px 0 10px">导入明细核对</div>
               <div class="tabs" style="margin-bottom:12px">
                 <button :class="['tab', previewTab === 'l1' ? 'active' : '']" @click="previewTab = 'l1'">
                   一级科目汇总

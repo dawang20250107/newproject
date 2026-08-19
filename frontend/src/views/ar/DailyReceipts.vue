@@ -449,7 +449,7 @@ async function exportXlsx(selectedOnly = false) {
               <PillPicker v-model="form.source" :presets="sourcePresets" placeholder="自定义来源，如 政府补贴" />
             </div>
             <div v-if="isProjectSource" class="frow"><label>关联项目</label>
-              <ProjectShortNamePicker :modelValue="projectKw" placeholder="模糊搜索项目台账（留空=不关联）"
+              <ProjectShortNamePicker :modelValue="projectKw" placeholder="输入项目简称搜索，留空则不关联项目"
                                       @update:modelValue="onProjInput" @picked="onProjPicked" />
             </div>
             <div v-if="isRefundSource" class="frow"><label>关联预付 <span class="hint">选填 · 选中后回冲该预付未核销余额</span></label>

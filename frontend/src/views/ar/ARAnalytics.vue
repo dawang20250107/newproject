@@ -465,7 +465,7 @@ const ctxDetailItems = computed(() => {
       <div class="urge-left">
         <div class="urge-icon">⚠</div>
         <div>
-          <div class="urge-title">超期强提醒 · {{ statusData.overdue.count }} 笔逾期待催收</div>
+          <div class="urge-title">逾期预警 · {{ statusData.overdue.count }} 笔逾期待催收</div>
           <div class="urge-sub">逾期未收合计 <b>{{ fmtWan(statusData.overdue.amount) }} 元</b>，请尽快跟进催收</div>
         </div>
       </div>
@@ -565,7 +565,7 @@ const ctxDetailItems = computed(() => {
     <div class="charts-grid">
       <div v-if="dueTargetOption" class="card" style="grid-column:span 2">
         <div class="section-title">本月到期目标 · 各事业部（当期 + 逾期 上账）
-          <span class="tip">绿=当期到期 · 红=逾期已沉淀 · 看清每个事业部的回款盘子与风险占比</span>
+          <span class="tip">绿=当期到期 · 红=逾期结转 · 对比各事业部到期回款规模与逾期占比</span>
         </div>
         <BaseChart :option="dueTargetOption" height="300px" />
       </div>

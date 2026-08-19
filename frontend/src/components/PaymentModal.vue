@@ -551,7 +551,7 @@ useModalEnter(() => true, submit)
       <div v-if="payment?.prepaid_offset_amount && parseFloat(payment.prepaid_offset_amount) > 0"
            class="prepaid-offset-tip">
         <span class="offset-icon">⚖️</span>
-        已关联预付核销 <strong>¥{{ parseFloat(payment.prepaid_offset_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</strong>，现金流已扣除此金额防双重计
+        已关联预付核销 <strong>¥{{ parseFloat(payment.prepaid_offset_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</strong>，现金流已扣减该金额，避免重复计入
       </div>
 
       <div class="modal-footer">

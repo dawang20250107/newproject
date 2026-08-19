@@ -1866,7 +1866,7 @@ async function undoBatchPay(b, ev) {
   let detail = []
   try {
     const pv = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids, preview: true })
-    detail = (pv.data?.rows || []).slice(0, 12).map(r => `记录#${r.record_id}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将被撤回`)
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `${r.short_name || '未关联项目'}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将撤回`)
     if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 笔`)
   } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
   if (!(await confirmDlg({ title: `撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元`,
@@ -2161,7 +2161,7 @@ async function savePayment(andNext = false) {
       await load()
       if (!nx) {
         showPayModal.value = false
-        toast.success('列表中已无下一条未结清记录，已收尾关闭')
+        toast.success('回款已保存，列表中已无下一条未结清记录，已关闭录入窗口')
       } else {
         payRec.value = items.value.find(r => r.id === nx.id) || nx
         // 日期/方式/账户沿用本次值（同一批回款单常为同日同账户），金额/备注清空
@@ -2395,7 +2395,7 @@ function clearFilters() {
       <div class="drop-box">
         <div class="drop-icon">📥</div>
         <div class="drop-title">松开鼠标，导入应收明细</div>
-        <div class="drop-sub">支持 .xlsx / .xls，与「↑ 导入」按钮同一校验流程</div>
+        <div class="drop-sub">支持 .xlsx / .xls，与点击「↑ 导入」效果相同</div>
       </div>
     </div>
     <div class="ar-head">
@@ -2431,7 +2431,7 @@ function clearFilters() {
                   :checked="c.key === 'r_tax_amount' && activeTab === 'invoice' ? true : !hiddenCols.has(c.key)"
                   :disabled="c.key === 'r_tax_amount' && activeTab === 'invoice'"
                   @change="toggleColVis(c.key)" />
-                {{ c.label }}<i v-if="c.key === 'r_tax_amount' && activeTab === 'invoice'" class="cv-note">本页恒显</i>
+                {{ c.label }}<i v-if="c.key === 'r_tax_amount' && activeTab === 'invoice'" class="cv-note">本页始终显示</i>
               </label>
             </div>
             <div v-if="showColPanel" class="col-vis-backdrop" @click="showColPanel = false"></div>
@@ -2551,7 +2551,7 @@ function clearFilters() {
             </div>
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
-          <span class="rc-hint" title="在任意行上点鼠标右键：催收日志 / 编辑 / 录入回款 / 复制(整行·项目·客户·批次·未收) / 删除">
+          <span class="rc-hint" title="在任意行上点鼠标右键：催款工作台 / 编辑 / 以此新建应收 / 录入回款 / 复制(整行·项目·客户·批次·未收) / 删除">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 3v6"/></svg>
             右键行可操作
           </span>
@@ -3281,7 +3281,7 @@ function clearFilters() {
           <button v-if="payTotal > size" :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
           <span class="page-info"><template v-if="payTotal > size">第 {{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · </template>共 {{ payTotal }} 条</span>
           <button v-if="payTotal > size" :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
-          <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">Go</button></span>
+          <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">跳转</button></span>
         </div>
 
         <!-- 底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）-->
@@ -3663,7 +3663,7 @@ function clearFilters() {
           <div class="modal-body">
             <template v-if="!batchPayResult">
               <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
-                一张发票到一笔钱，不用再手工拆账：金额将按<strong>运作日期先进先出</strong>自动分摊到批次内仍有未收的记录。
+                一笔回款对应整批发票，无需手工分配：金额将按<strong>运作日期先进先出</strong>自动分摊到批次内仍有未收的记录。
                 可多次录入（部分回款），每次从未结清的记录继续分摊。
                 批次未收合计 <strong>{{ fmtCell(batchTarget?.outstanding) }}</strong> 元。
               </p>
@@ -3706,7 +3706,7 @@ function clearFilters() {
                   <em v-if="parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0)"
                       class="bp-overflow-hint">
                     本次到账将超出未收 {{ (parseFloat(batchPayForm.amount) - parseFloat(batchTarget?.outstanding || 0)).toFixed(2) }} 元
-                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项一键处理，否则将被拒绝' }}
+                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项即可自动转为预收；否则本次回款无法提交' }}
                   </em>
                 </label>
               </div>
@@ -3836,7 +3836,7 @@ function clearFilters() {
                 <span class="adv-hint-tag">可用预收</span>
                 <span>该项目尚有 <b>{{ payAdvance.count }}</b> 笔预收，余额合计
                   <b>{{ fmtAmt(payAdvance.total_balance) }}</b></span>
-                <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收页管理 →</button>
+                <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收预付页管理 →</button>
               </div>
               <ul class="adv-hint-list">
                 <li v-for="a in payAdvance.items.slice(0, 5)" :key="a.id" :class="{ on: advWoSel?.id === a.id }">
@@ -3876,7 +3876,7 @@ function clearFilters() {
                 </span>
                 <input ref="payAmtInput" v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
                        @keydown="onPayAmtKeydown" />
-                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，，本笔无法保存；多收部分请核实后在「差额调整」或「预收预付」中登记</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>

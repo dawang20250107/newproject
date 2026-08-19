@@ -1032,7 +1032,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="topbar-tools" v-show="subtab === 'list'">
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
-            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
+            title="运输事业部专用：上传运输系统导出的对账单原始表，金额统一按正数入账、重复对账单号只保留一条，生成「审批通过」记录，可直接排款进付款管理">
       <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
@@ -1234,7 +1234,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
     <label class="form-field"><span>审批编号</span><input ref="apprNoInputRef" v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
-    <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
+    <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，多个单号用「/」分隔，最多255个字符" maxlength="255"/></label>
     <label class="form-field"><span>摘要</span><input ref="summaryInputRef" v-model="form.summary"/></label>
     <label class="form-field"><span>备注</span><input v-model="form.notes" placeholder="选填"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
@@ -1400,7 +1400,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 批量删除二次确认 -->
   <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">
-    <p class="del-warn">⚠ 删除后不可恢复；已排款（已关联付款管理）的记录将自动跳过。</p>
+    <p class="del-warn">⚠ 删除后移入回收站，可在回收站还原；已排款（已关联付款管理）的记录将另行确认是否连同排款一并删除。</p>
     <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
     <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
