@@ -143,12 +143,15 @@ const schemes = useTableSchemes('pk_approvals', {
 // ── 筛选条件 chips ───────────────────────────────────────────────────────────
 const _OP_LABEL = { contains: '含 ', not_contains: '不含 ', eq: '= ', ne: '≠ ', gt: '> ', gte: '≥ ',
                     lt: '< ', lte: '≤ ', startswith: '开头 ', endswith: '结尾 ', empty: '为空', not_empty: '非空' }
-function describeFilterVal(f) {
+// 枚举值展示中文：筛选 chip 不能把 pending/approved 这类库值直接吐给用户
+const _ENUM_ZH = { status: { pending: '待审批', approved: '审批通过', rejected: '已拒绝', canceled: '已撤销' } }
+const _zhVal = (field, v) => _ENUM_ZH[field]?.[v] ?? v
+function describeFilterVal(f, field) {
   if (!f) return ''
   if (f.op === 'empty' || f.op === 'not_empty') return _OP_LABEL[f.op]
-  if (Array.isArray(f.value)) return f.value.join('/')
+  if (Array.isArray(f.value)) return f.value.map(v => _zhVal(field, v)).join('/')
   if (f.value2 !== undefined && f.value2 !== null && f.value2 !== '') return `${f.value}~${f.value2}`
-  return (_OP_LABEL[f.op] || '') + (f.value ?? '')
+  return (_OP_LABEL[f.op] || '') + _zhVal(field, f.value ?? '')
 }
 const _APR_LABELS = { applicant: '申请人', department: '事业部', secondary_dept: '二级部门',
   project_short_name: '项目简称', approval_number: '审批编号', g7_number: 'G7编号', summary: '摘要',
@@ -157,7 +160,7 @@ const _APR_LABELS = { applicant: '申请人', department: '事业部', secondary
 const filterChips = computed(() => {
   const chips = []
   Object.entries(colFilters).forEach(([field, f]) => {
-    if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f)}`, clear: () => setColFilter(field, null) })
+    if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f, field)}`, clear: () => setColFilter(field, null) })
   })
   if (numbersFilter.value) chips.push({ key: 'nums', text: `批量单号(${numbersFilter.value.split(',').length})`, clear: () => { numbersFilter.value = ''; page.value = 1; load() } })
   if (q.value) chips.push({ key: 'q', text: `关键字: ${q.value}`, clear: () => { q.value = ''; page.value = 1; load() } })
@@ -1056,6 +1059,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div class="apr-timebar">
     <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
+    <span v-for="c in filterChips" :key="c.key" class="fchip">
+      {{ c.text }}<button class="fchip-x" :aria-label="`移除筛选 ${c.text}`" @click="c.clear()">×</button>
+    </span>
     <button class="cv-chip" :class="{ on: closedView === 'only' }"
             :title="closedView === 'only'
               ? '当前只显示已关闭剩余排款的审批（剩余额度不再执行，不计入未排合计）；点此返回常规列表'
@@ -1063,11 +1069,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
             @click="toggleClosedView">{{ closedView === 'only' ? '✕ 排款已关闭' : '排款已关闭' }}</button>
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
-  <div v-if="filterChips.length" class="chips-row">
-    <span v-for="c in filterChips" :key="c.key" class="fchip">
-      {{ c.text }}<button class="fchip-x" :aria-label="`移除筛选 ${c.text}`" @click="c.clear()">×</button>
-    </span>
-  </div>
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
@@ -1420,8 +1421,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 .err-banner { background: var(--c-warn-bg); border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--c-warn); display: flex; align-items: center; gap: 8px; }
-.apr-timebar { padding: 2px 0 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.apr-timebar > :first-child { flex: 1 1 auto; min-width: 0; }
+/* 一行装下：登记时间预设 + 已选筛选 chips + 「排款已关闭」视图开关（右贴） */
+.apr-timebar { padding: 2px 0 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.apr-timebar > :first-child { flex: 0 1 auto; min-width: 0; }
+.apr-timebar .fchip { flex-shrink: 0; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
