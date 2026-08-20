@@ -2403,13 +2403,24 @@ def advance_installments_migrate(request, pk):
             src_after = (src.balance_amount or Decimal('0')) - inst_amt + wo_amt
             if src_after < Decimal('0'):
                 need = -src_after
-                if carry_mode == 'auto':
-                    return err(f'迁移后源记录余额将为负 {src_after:,.2f}：可自动随迁的纯登记核销'
-                               f'不足（缺 {need:,.2f}，其余核销已关联预收抵扣回款/排款）。'
-                               '请先撤销对应关联核销后重试')
-                return err(f'迁移后源记录余额将为负 {src_after:,.2f}：被迁收付已被核销覆盖，'
-                           f'请连带迁移约 {need:,.2f} 的纯登记核销（或用自动同步模式），'
-                           '或先撤销对应核销')
+                # 精确定位缺口成因：退款冲抵 / 关联型核销（预收抵扣、排款）/ 需连带纯核销
+                refund_amt = src.refunded_amount or Decimal('0')
+                linked_wo = ((src.written_off_amount or Decimal('0'))
+                             - sum((w.amount or Decimal('0')) for w in wos)
+                             - (split_plan[1] if split_plan else Decimal('0')))
+                causes = []
+                if refund_amt > 0:
+                    causes.append(f'已退款 {refund_amt:,.2f}（退款为供应商退回的现金，'
+                                  '不随迁移转移；如供应商确已变更，请先在日常收款解除该退款关联）')
+                if linked_wo > 0:
+                    causes.append(f'已关联预收抵扣回款/排款的核销 {linked_wo:,.2f}'
+                                  '（请先撤销对应关联核销）')
+                if carry_mode != 'auto' and not causes:
+                    causes.append(f'被迁收付已被核销覆盖，请连带迁移约 {need:,.2f} 的纯登记核销，'
+                                  '或改用自动同步模式')
+                tail = '；'.join(causes) if causes else '被迁收付已被其它记录占用'
+                return err(f'迁移后源记录余额将为负 {src_after:,.2f}，无法迁移：该笔收付有 '
+                           f'{need:,.2f} 由以下方式冲抵、不能随迁——{tail}')
             # 目标：已有 or 新建（校验先行，写入殿后——return 不回滚事务）
             to_id = data.get('to_advance_id')
             new_target = None

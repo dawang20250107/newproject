@@ -5688,6 +5688,33 @@ class AdvanceInstallmentMigrateTests(TestCase):
         self.assertEqual(low.advance_amount, Decimal('39800.00'))   # 100+40000−300
         self.assertEqual(low.aging_base_date, date(2026, 2, 20))    # 忽略 2025 的退回行
 
+    def test_migrate_refund_covered_rejected_with_clear_msg(self):
+        # 预付被退款冲抵时迁移被拒，报错须指明「退款」而非误导为「核销」
+        from ar.models import DailyReceipt
+        pay = mk_advance(direction='预付', counterparty='供应商R', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=1, occur_date=date(2026, 1, 10),
+                         advance_amount=Decimal('50000'))
+        DailyReceipt.objects.create(source='预付退款', advance_record=pay,
+                                    amount=Decimal('50000'), receipt_date=date(2026, 2, 1),
+                                    delivery_dept=self.dept)
+        pay.refresh_from_db(); pay.recompute_derived(); pay.refresh_from_db()
+        self.assertEqual(pay.balance_amount, Decimal('0.00'))
+        tgt = mk_advance(direction='预付', counterparty='供应商Rt', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=3, advance_amount=Decimal('0'))
+        inst = pay.installments.get()
+        r = self.client.post(f'/api/pk/ar/advances/{pay.id}/installments/migrate',
+                             data=json.dumps({'installment_ids': [inst.id], 'reason': 'x',
+                                              'to_advance_id': tgt.id}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        msg = r.json().get('msg') or r.json().get('error') or ''
+        self.assertIn('退款', msg)
+        self.assertNotIn('请先撤销对应关联核销后重试', msg)   # 不再套用核销文案
+        # 数据未变
+        pay.refresh_from_db(); tgt.refresh_from_db()
+        self.assertEqual(pay.balance_amount, Decimal('0.00'))
+        self.assertEqual(tgt.installments.count(), 0)
+
     def test_migrate_to_new_target_with_project(self):
         proj = ARProject.objects.create(customer_name='新客', short_name='落位项目',
                                         delivery_dept=self.dept, sales_contact='s',
