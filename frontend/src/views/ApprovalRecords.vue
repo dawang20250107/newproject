@@ -564,6 +564,9 @@ const deptChoices = computed(() => {
   if (auth.isAdmin && !auth.activeDepts.length) return depts.value
   return depts.value.filter(d => scope.includes(d))
 })
+// 列头筛选选项：/departments 未返回或为空时回退登录态可见部门，保证超管始终能按全部事业部筛
+const deptFilterOpts = computed(() =>
+  (deptChoices.value && deptChoices.value.length) ? deptChoices.value : auth.effectiveDepts)
 
 const jumpPage = ref(1)
 function doJump() {
@@ -1090,7 +1093,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
       <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
-      <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
+      <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptFilterOpts" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
       <th><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
       <th><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
       <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
@@ -1428,7 +1431,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
-.table-wrap.page-scroll { padding-bottom: 40px; }
+.table-wrap.page-scroll { margin-bottom: 40px; }
 /* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
 .tb-left { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
 /* 页头标题/子标签不换行：空间不足时优先压缩右侧工具区（topbar-tools 可换行），标题恒定一行 */
@@ -1503,7 +1506,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .status-cell.st-approved .status-badge { color: var(--c-success); background: var(--c-success-bg); border-color: var(--c-success-bdr); }
 .status-cell.st-rejected .status-badge { color: var(--c-danger); background: var(--c-danger-bg); border-color: var(--c-danger-bdr); }
 .status-cell.st-canceled .status-badge { color: var(--muted); background: rgba(120,120,120,0.12); border-color: rgba(120,120,120,0.3); }
-.g7-cell { color: var(--muted); }
+.g7-cell { color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 /* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
 .approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.048); }
 .approval-table tr.row-sel td,
