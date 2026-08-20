@@ -214,6 +214,94 @@ def customers_bulk_tag_level(request):
                'message': f'{action}，共更新 {updated} 个客户'})
 
 
+@csrf_exempt
+@pk_required()
+def customers_bulk_set_status(request):
+    """POST /customers/bulk-set-status  —  批量修改客户状态（可选联动名下项目）。
+
+    Body: { "ids": [1,2,3], "status": "结束", "push_status": true }
+    或   : { "all": true, "status": "...", "q": "...", "status_filter": "...", "dept": "..." }
+      all=true 时对当前筛选全集改状态，限 5000 条。
+    push_status=true 时同步把状态下发到这些客户名下的所有项目——与单客户编辑弹窗的
+    push_status 契约一致（联动是显式选择，不勾则只改客户，项目状态各自独立）。
+    """
+    denied = _page_denied(request, 'ar_projects') or _write_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    # 共享业务岗位（ar_shared_only，如销售BP）只可见共享项目的客户切面：批量改状态会
+    # 波及其不可见的自营客户/项目（读路径在列表与单项目端点均有收窄），直接拒绝。
+    _perms = get_request_perms(request)
+    if _perms is not None and _perms.get('ar_shared_only'):
+        return err('共享业务岗位仅可见共享项目切面，不支持批量修改客户状态', 403, 403)
+
+    data = _parse_body(request)
+    # 非字符串参数（数字/布尔/数组）一律按空处理 → 落入 400 校验，不让 .strip() 崩 500
+    _sval = lambda v: v.strip() if isinstance(v, str) else ''
+    st = _sval(data.get('status'))
+    if st not in dict(Customer.STATUS_CHOICES):
+        return err(f'无效客户状态「{st}」，可选：运作中/中断/结束')
+    push = data.get('push_status') in (True, 'true', '1')
+
+    all_flag = data.get('all') in (True, 'true', '1')
+    ids = data.get('ids')
+
+    if all_flag:
+        # 部门隔离：非超管只能批量操作自己有权部门的客户（无授权部门→空集）
+        qs = _ar_dept_filter(Customer.objects.all(), request, dept_field='delivery_dept')
+        # 批量写的筛选参数不做「静默忽略」：非字符串直接 400——若把坏类型当空过滤，
+        # 调用方本想改一个子集会变成改全集，比崩溃更危险
+        for _name in ('q', 'status_filter', 'dept'):
+            _v = data.get(_name)
+            if _v is not None and not isinstance(_v, str):
+                return err(f'{_name} 参数必须为字符串')
+        q = _sval(data.get('q'))
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
+        status_filter = _sval(data.get('status_filter'))
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        dept_filter = _sval(data.get('dept'))
+        if dept_filter:
+            qs = qs.filter(delivery_dept=dept_filter)
+        cnt = qs.count()
+        if cnt == 0:
+            return err('当前筛选没有匹配的客户')
+        if cnt > 5000:
+            return err('选中客户超过5000个，请缩小筛选范围后再批量操作')
+        id_list = list(qs.values_list('id', flat=True))
+        updated = qs.update(status=st)
+    else:
+        if not ids or not isinstance(ids, list):
+            return err('请传入 ids 数组或 all=true')
+        if len(ids) > 5000:
+            return err('单次最多批量操作5000个客户，请分批处理')
+        try:
+            id_list = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            return err('ids 必须为整数数组')
+        # 部门隔离：仅保留用户有权部门的客户（无授权部门→空集，杜绝按 id 跨部门越权）
+        cqs = _ar_dept_filter(
+            Customer.objects.filter(pk__in=id_list), request, dept_field='delivery_dept')
+        id_list = list(cqs.values_list('id', flat=True))
+        updated = cqs.update(status=st)
+
+    projects_updated = 0
+    if push and id_list:
+        # 联动同样过部门守卫（纵深防御）：正常数据不变式下项目部门=客户部门，此过滤为
+        # 冗余；一旦不变式被历史数据破坏，也绝不跨部门改写项目状态。
+        pqs = _ar_dept_filter(ARProject.objects.filter(customer_id__in=id_list),
+                              request, dept_field='delivery_dept')
+        projects_updated = pqs.update(status=st)
+
+    msg = f'已把 {updated} 个客户状态改为「{st}」'
+    if push:
+        msg += f'，并联动更新名下 {projects_updated} 个项目'
+    return ok({'updated': updated, 'projects_updated': projects_updated,
+               'status': st, 'message': msg})
+
+
 def _reconcile_customer_levels(customer_ids):
     """以客户为准对齐「客户等级 ↔ 项目等级」。
     每个客户取规范等级 = 客户已有等级；客户为空则取其项目中出现最多的非空等级；

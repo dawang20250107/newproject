@@ -601,6 +601,11 @@ tr:last-child td { border-bottom: none; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(160,128,104,0.30); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(160,128,104,0.55); }
+/* 宽表横向滚动条加粗且常显轨道：细 6px 覆盖在内容上肉眼难察觉，用户找不到「往右滑」的入口 */
+.table-wrap::-webkit-scrollbar:horizontal { height: 11px; }
+.table-wrap::-webkit-scrollbar-track:horizontal { background: rgba(160,128,104,0.10); border-radius: 6px; }
+.table-wrap::-webkit-scrollbar-thumb:horizontal { background: rgba(160,128,104,0.45); border-radius: 6px; }
+.table-wrap::-webkit-scrollbar-thumb:horizontal:hover { background: rgba(160,128,104,0.70); }
 
 /* ── mobile hamburger + drawer backdrop (hidden on desktop) ──────────────── */
 .mobile-nav-toggle { display: none; }

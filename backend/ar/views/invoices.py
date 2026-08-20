@@ -531,7 +531,7 @@ def ar_invoice_batch_payment_undo(request, batch_no):
     if not member_ids:
         return err('批次不存在或无权访问', 404)
     tag = f'批次回款[{batch_no}]'
-    pays = list(ARPayment.objects.filter(pk__in=ids))
+    pays = list(ARPayment.objects.select_related('ar_record__project').filter(pk__in=ids))
     if len(pays) != len(set(ids)):
         return err('部分回款记录不存在（可能已被撤销）', 404)
     for p in pays:
@@ -544,7 +544,10 @@ def ar_invoice_batch_payment_undo(request, batch_no):
             return err(f'回款 #{p.id} 为预收抵扣，请走「撤销核销」')
     total = sum(p.amount or Decimal('0') for p in pays)
     if data.get('preview') in (True, 'true', '1', 1):
-        prows = [{'record_id': p.ar_record_id, 'amount': float(p.amount or 0),
+        prows = [{'record_id': p.ar_record_id,
+                  'short_name': (p.ar_record.project.short_name
+                                 if p.ar_record_id and p.ar_record.project_id else ''),
+                  'amount': float(p.amount or 0),
                   'pay_date': str(p.payment_date), 'method': p.method or ''} for p in pays]
         return ok({'preview': True, 'rows': prows, 'count': len(prows),
                    'total_revert': float(total)})

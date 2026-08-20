@@ -367,13 +367,13 @@ const runwayOption = computed(() => {
   const danger = data.map(v => (v < 0 ? v : null))
   return {
     tooltip: { trigger: 'axis', ...TT_STYLE,
-      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>累计资金池：<b>${signWan(p[0].value)}</b>` },
+      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>累计净现金流：<b>${signWan(p[0].value)}</b>` },
     grid: { ...GRIDL, top: 28 },
     xAxis: { type: 'category', boundaryGap: false, data: lbls,
              axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
-      { name: '累计资金池', type: 'line', smooth: true, data, symbol: 'circle', symbolSize: 6,
+      { name: '累计净现金流', type: 'line', smooth: true, data, symbol: 'circle', symbolSize: 6,
         lineStyle: { width: 3, color: '#1565c0' }, itemStyle: { color: '#1565c0' },
         label: { show: true, position: 'top', fontSize: 10, fontWeight: 700, color: '#1565c0',
                  textBorderColor: '#fff', textBorderWidth: 3, formatter: p => fmtWan(p.value) },
@@ -385,7 +385,7 @@ const runwayOption = computed(() => {
           { offset: 1, color: 'rgba(198,40,40,0.30)' }] } },
         markLine: { silent: true, symbol: 'none',
           lineStyle: { color: 'rgba(120,30,30,0.5)', type: 'dashed', width: 1.5 },
-          label: { formatter: '资金生死线', color: '#c62828', fontSize: 10, position: 'insideEndTop' },
+          label: { formatter: '资金平衡线（0）', color: '#c62828', fontSize: 10, position: 'insideEndTop' },
           data: [{ yAxis: 0 }] },
         markPoint: {
           symbolSize: 52, symbol: 'pin',
@@ -500,11 +500,11 @@ const sankeyOption = computed(() => {
   <div>
     <div v-if="!embedded" class="topbar">
       <div>
-        <h1>现金流分析<span v-if="hasAlert" class="cf-title-alert">⚠ 造血功能不足！请立即采取措施！</span></h1>
+        <h1>现金流分析<span v-if="hasAlert" class="cf-title-alert">⚠ 现金流预警：部分月份资金流出大于流入</span></h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">财务驾驶舱 · 预算达成 · 净现金流 · 累计走势</div>
       </div>
     </div>
-    <div v-else-if="hasAlert" class="cf-embed-alert">⚠ 造血功能不足！请立即采取措施！</div>
+    <div v-else-if="hasAlert" class="cf-embed-alert">⚠ 现金流预警：部分月份资金流出大于流入</div>
 
     <!-- Polished filter bar: dept | date range on one line -->
     <div class="cf-filterbar">
@@ -577,7 +577,7 @@ const sankeyOption = computed(() => {
           <div class="ck-card ck-pay-soft">
             <div class="ck-label">预付</div>
             <div class="ck-value"><Amt :v="sumAdvPaid" :fmt="fmtWan" /></div>
-            <div class="ck-sub">付供应商</div>
+            <div class="ck-sub">供应商预付款</div>
           </div>
           <div class="ck-card ck-pay">
             <div class="ck-label">实付</div>
@@ -605,7 +605,7 @@ const sankeyOption = computed(() => {
             <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
               {{ endCumulative >= 0 ? '+' : '' }}<Amt :v="endCumulative" :fmt="fmtWan" />
             </div>
-            <div class="ck-sub">资金池终值</div>
+            <div class="ck-sub">累计净现金流期末值</div>
           </div>
         </div>
       </section>
@@ -617,7 +617,7 @@ const sankeyOption = computed(() => {
       <template v-if="density === 'sparse' && storyData && !forceCharts">
         <div class="card span2">
           <div class="section-title">资金故事
-            <span class="section-sub">区间内现金流月份较少，直接讲结论；数据变多后自动切换完整图表</span>
+            <span class="section-sub">当前区间月份较少，先呈现结论摘要；月份增多后展示完整图表</span>
             <button class="cs-viewswitch" @click="forceCharts = true">仍看图表 ›</button>
           </div>
           <CashStory v-bind="storyData" @month-click="drillYm" />
@@ -647,7 +647,7 @@ const sankeyOption = computed(() => {
       <!-- 现金跑道与谷底 -->
       <div class="card span2">
         <div class="section-title">现金跑道与谷底
-          <span class="section-sub">累计资金池 · 跌破 0 转红 · 标注现金谷底与资金峰值</span>
+          <span class="section-sub">累计净现金流 · 跌破 0 转红 · 标注现金谷底与资金峰值</span>
         </div>
         <BaseChart v-if="runwayOption" :option="runwayOption" height="280px" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
@@ -656,7 +656,7 @@ const sankeyOption = computed(() => {
       <!-- 桑基资金流向：谁在供血 → 资金池 → 钱花去哪（数据密集时） -->
       <div v-if="sankeyOption" class="card span2">
         <div class="section-title">资金流向
-          <span class="section-sub">左＝谁在供血（{{ showDeptComparison ? '各事业部流入' : '流入构成' }}）· 右＝钱花去哪 · 蓝＝净留存 / 红＝消耗存量</span>
+          <span class="section-sub">左＝资金来源（{{ showDeptComparison ? '各事业部流入' : '流入构成' }}）· 右＝资金去向 · 蓝＝净留存 / 红＝动用存量资金</span>
         </div>
         <BaseChart :option="sankeyOption" height="320px" />
       </div>

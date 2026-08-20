@@ -69,6 +69,7 @@ urlpatterns = [
     path('approvals/<int:pk>', views.approval_record_detail),
     path('approvals/<int:pk>/schedule', views.approval_record_schedule),
     path('approvals/<int:pk>/schedule-detail', views.approval_schedule_detail),
+    path('approvals/<int:pk>/close-schedule', views.approval_schedule_close),
     path('dashboard', views.dashboard),
     path('stats', views.stats),
     path('users', views.users),

@@ -163,6 +163,18 @@ async function exportDeptPl() {
   } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
+// 经营情况表：一级科目→部门→明细逐级缩进，合计+逐月+末两月费销比+环比，
+// 底部调增调减手工填列区联动实际经营情况；每事业部一个 sheet
+async function exportOperating() {
+  exporting.value = true
+  try {
+    const params = { year: year.value }
+    if (selectedBu.value) params.bu = selectedBu.value
+    const res = await api.get('/report/operating-export', { params, responseType: 'blob' })
+    downloadBlob(res, `经营情况表_${selectedBu.value || '全部事业部'}_${year.value}年.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { exporting.value = false }
+}
 
 const toast = useToast()
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
@@ -197,7 +209,7 @@ const ctxReportItems = computed(() => {
     children: [
       { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
       { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
-      { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
+      { key: 'copy-row', label: '整行（含各月，可粘贴到 Excel）', icon: 'cell', action: row => {
           const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
           copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
         } },
@@ -236,11 +248,15 @@ onMounted(() => {
         <div class="ctrl-sep"></div>
         <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
         <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
-          {{ exporting ? '导出中…' : '↓ 导出美化表' }}
+          {{ exporting ? '导出中…' : '↓ 导出财务报表' }}
         </button>
         <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportDeptPl"
                 title="按 科目行 × 项目部列 导出分部门利润表，逐月各一个 sheet（金蝶部门明细口径）">
           {{ exporting ? '导出中…' : '↓ 分部门利润表' }}
+        </button>
+        <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportOperating"
+                title="按一级科目、部门、明细逐级缩进列示；含合计、各月金额、最近两月费销比与金额环比；底部设调增调减填列区，填写后自动汇入「实际经营情况」；每个事业部单独一个工作表">
+          {{ exporting ? '导出中…' : '↓ 经营情况表' }}
         </button>
       </div>
     </div>

@@ -6,9 +6,9 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, AdvanceInstallment, CollectionBudget, PaymentBudget,
+from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, ARInvoiceEntry, AdvanceInstallment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Customer,
-                       Contract, ContractParty, ContractProject, ActionItem)
+                       Contract, ContractParty, ContractProject, ActionItem, AdvanceTransfer)
 from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -817,6 +817,75 @@ class ARPermissionRegressionTests(TestCase):
                                 content_type='application/json', **self.auth(user))
         self.assertEqual(resp.status_code, 403, resp.content)
         self.assertTrue(ARProject.objects.filter(pk=p.id).exists())
+
+    def test_customers_bulk_set_status_scope_push_and_guards(self):
+        """客户批量改状态：部门越权守卫 + push_status 联动名下项目 + 白名单 + 写权限。"""
+        import json as _json
+        writer = self.make_user('13910000094', 'finance_director')   # 仅 self.dept
+        # 项目保存时按 customer_name 自动挂客户（_autolink_customer），按真实链路建模：
+        # 客户名与项目 customer_name 一致 → create_project 即挂到 c1
+        c1 = Customer.objects.create(name='Contract A', delivery_dept=self.dept)
+        c2 = Customer.objects.create(name='批量客户乙', delivery_dept=self.other_dept)
+        p1 = self.create_project()
+        self.assertEqual(p1.customer_id, c1.id)   # autolink 挂接成功
+
+        def post(payload, user):
+            return self.client.post('/api/pk/ar/customers/bulk-set-status',
+                                    data=_json.dumps(payload),
+                                    content_type='application/json', **self.auth(user))
+
+        # 不联动：只改客户，项目不动；c2 因部门越权被过滤
+        r = post({'ids': [c1.id, c2.id], 'status': '中断'}, writer)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['updated'], 1)
+        self.assertEqual(r.json()['data']['projects_updated'], 0)
+        c1.refresh_from_db(); c2.refresh_from_db(); p1.refresh_from_db()
+        self.assertEqual(c1.status, '中断')
+        self.assertEqual(c2.status, '运作中')        # 跨部门未被改
+        self.assertEqual(p1.status, '运作中')        # 未联动
+
+        # 联动：push_status=true → 名下项目一并改
+        r = post({'ids': [c1.id], 'status': '结束', 'push_status': True}, writer)
+        self.assertEqual(r.json()['data']['projects_updated'], 1)
+        p1.refresh_from_db()
+        self.assertEqual(p1.status, '结束')
+
+        # 白名单：非法状态 400；非字符串参数（数字/布尔/数组）走 400 而非 .strip() 崩 500
+        self.assertEqual(post({'ids': [c1.id], 'status': '乱写'}, writer).status_code, 400)
+        self.assertEqual(post({'ids': [c1.id], 'status': 123}, writer).status_code, 400)
+        self.assertEqual(post({'ids': [c1.id], 'status': True}, writer).status_code, 400)
+        self.assertEqual(post({'all': True, 'status': '结束', 'q': 1}, writer).status_code, 400)
+
+        # ids 数量上限：>5000 直接 400（防超长 pk__in 绕过 all 分支护栏）
+        self.assertEqual(post({'ids': list(range(1, 5002)), 'status': '结束'}, writer).status_code, 400)
+
+        # 联动纵深防御：项目部门被历史数据破坏（≠客户部门）时，联动不得跨部门改写
+        ARProject.objects.filter(pk=p1.pk).update(delivery_dept=self.other_dept, status='运作中')
+        r = post({'ids': [c1.id], 'status': '中断', 'push_status': True}, writer)
+        self.assertEqual(r.json()['data']['projects_updated'], 0)   # 越权项目未被联动
+        p1.refresh_from_db()
+        self.assertEqual(p1.status, '运作中')
+        ARProject.objects.filter(pk=p1.pk).update(delivery_dept=self.dept)   # 复原
+
+        # 写权限：无 ar_can_create/can_create 的角色被拒
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_projects'] = True
+        cfg['ar_can_create'] = False
+        cfg['can_create'] = False
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        ro = self.make_user('13910000093', 'cashier')
+        self.assertEqual(post({'ids': [c1.id], 'status': '运作中'}, ro).status_code, 403)
+
+        # 共享业务岗位（ar_shared_only）即便被叠加写权限，也不得批量改状态
+        cfg2 = default_job_config('sales_bp')
+        cfg2['pages']['ar_projects'] = True
+        cfg2['ar_can_create'] = True
+        cfg2['ar_shared_only'] = True
+        JobPermission.objects.create(job_title='sales_bp', config=cfg2)
+        _invalidate_perm_cache('sales_bp')
+        bp = self.make_user('13910000092', 'sales_bp')
+        self.assertEqual(post({'ids': [c1.id], 'status': '结束'}, bp).status_code, 403)
 
     def test_bulk_delete_allowed_with_can_delete(self):
         """非超管但 can_delete=true 应被允许批量删除（验证授权链路正确）。"""
@@ -3964,6 +4033,26 @@ class AdjustmentAndCycleTests(TestCase):
         self.assertEqual(rec.account_diff_adjustment, Decimal('-50'))
         self.assertEqual(rec.outstanding_amount, Decimal('950'))
 
+    def test_create_record_with_diff_carries_adjust_date(self):
+        # 新建记录带初始差额：显式 adjust_date 落到明细；缺省回落运作日期
+        r = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-05-01',
+            'estimated_amount': '1000', 'account_diff_adjustment': '-30',
+            'adjustment_reason': '运费差', 'adjust_date': '2026-06-15'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        adj = ARAdjustment.objects.get(ar_record_id=r.json()['data']['id'])
+        self.assertEqual(adj.adjust_date, date(2026, 6, 15))
+
+        r2 = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-05-01',
+            'estimated_amount': '1000', 'account_diff_adjustment': '20',
+            'adjustment_reason': '补付'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 200, r2.content)
+        adj2 = ARAdjustment.objects.get(ar_record_id=r2.json()['data']['id'])
+        self.assertEqual(adj2.adjust_date, date(2026, 5, 1))   # 默认随运作日期
+
     def test_adjustment_requires_reason_and_nonzero(self):
         rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
                                       estimated_amount=Decimal('1000'))
@@ -5190,6 +5279,456 @@ class CashflowDraftBillParityTests(TestCase):
         self.assertEqual(r['totals']['collected'][0], 1500.0)
 
 
+class AdvanceTransferTests(TestCase):
+    """预收/预付转移：非现金权益重分类、账龄承袭、核销迁移、跨部门权限、撤销守卫。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        self.other_dept = '劳务事业部'
+        self.admin = PaikuanUser(phone='13900003300', name='TransAdmin', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Test123456')
+        self.admin.save()
+        self.src = mk_advance(direction='预收', counterparty='客户A', delivery_dept=self.dept,
+                              occur_year=2026, occur_month=1, occur_date=date(2026, 1, 10),
+                              advance_amount=Decimal('100000'))
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user or self.admin)}'}
+
+    def _post(self, rec_id, body, user=None):
+        return self.client.post(f'/api/pk/ar/advances/{rec_id}/transfers',
+                                data=json.dumps(body), content_type='application/json',
+                                **self.auth(user))
+
+    def test_transfer_moves_balance_not_cash(self):
+        tgt = mk_advance(direction='预收', counterparty='客户B', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=3, occur_date=date(2026, 3, 5),
+                         advance_amount=Decimal('1000'))
+        r = self._post(self.src.id, {'amount': '30000', 'transfer_date': '2026-06-01',
+                                     'reason': '合同主体变更', 'to_advance_id': tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); tgt.refresh_from_db()
+        # 余额移动：源 70000，目标 31000
+        self.assertEqual(self.src.balance_amount, Decimal('70000.00'))
+        self.assertEqual(self.src.transferred_out_amount, Decimal('30000.00'))
+        self.assertEqual(tgt.balance_amount, Decimal('31000.00'))
+        self.assertEqual(tgt.transferred_in_amount, Decimal('30000.00'))
+        # 非现金：双方收付明细（现金正源）不变
+        self.assertEqual(self.src.installments.count(), 1)
+        self.assertEqual(tgt.installments.count(), 1)
+        self.assertEqual(self.src.advance_amount, Decimal('100000'))
+        self.assertEqual(tgt.advance_amount, Decimal('1000'))
+        # 账龄承袭：目标承袭源 2026-01-10 起点
+        self.assertEqual(tgt.aging_base_date, date(2026, 1, 10))
+        self.assertGreater(tgt.aging_dict(today=date(2026, 6, 30))['pending_days'],
+                           (date(2026, 6, 30) - date(2026, 3, 5)).days)
+
+    def test_transfer_new_target_and_full_out_status(self):
+        proj = ARProject.objects.create(customer_name='转移客户', short_name='转移项目',
+                                        delivery_dept=self.dept, sales_contact='s',
+                                        project_manager='m')
+        r = self._post(self.src.id, {'amount': '100000', 'transfer_date': '2026-06-01',
+                                     'reason': '项目落位',
+                                     'new_target': {'counterparty': '客户A', 'project_id': proj.id}})
+        self.assertEqual(r.status_code, 200, r.content)
+        tid = r.json()['data']['target_id']
+        tgt = AdvanceRecord.objects.get(pk=tid)
+        self.assertEqual(tgt.project_id, proj.id)
+        self.assertEqual(tgt.balance_amount, Decimal('100000.00'))
+        self.src.refresh_from_db()
+        self.assertEqual(self.src.balance_amount, Decimal('0.00'))
+        self.assertEqual(self.src.writeoff_status, '已转出')   # 非「已核销」
+
+    def test_transfer_guards(self):
+        # 超余额 / 方向不符 / 自转 / 无原因
+        tgt_pay = mk_advance(direction='预付', counterparty='供应商X', delivery_dept=self.dept,
+                             occur_year=2026, occur_month=1, advance_amount=Decimal('500'))
+        self.assertEqual(self._post(self.src.id, {'amount': '999999', 'transfer_date': '2026-06-01',
+                                                  'reason': 'r', 'to_advance_id': tgt_pay.id}).status_code, 400)
+        self.assertEqual(self._post(self.src.id, {'amount': '10', 'transfer_date': '2026-06-01',
+                                                  'reason': 'r', 'to_advance_id': tgt_pay.id}).status_code, 400)
+        self.assertEqual(self._post(self.src.id, {'amount': '10', 'transfer_date': '2026-06-01',
+                                                  'reason': 'r', 'to_advance_id': self.src.id}).status_code, 400)
+        tgt = mk_advance(direction='预收', counterparty='客户C', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=1, advance_amount=Decimal('1'))
+        self.assertEqual(self._post(self.src.id, {'amount': '10', 'transfer_date': '2026-06-01',
+                                                  'reason': '', 'to_advance_id': tgt.id}).status_code, 400)
+
+    def test_cross_dept_super_admin_only(self):
+        tgt = mk_advance(direction='预收', counterparty='客户D', delivery_dept=self.other_dept,
+                         occur_year=2026, occur_month=1, advance_amount=Decimal('1'))
+        op = self.make_operator()
+        r = self._post(self.src.id, {'amount': '10', 'transfer_date': '2026-06-01',
+                                     'reason': '跨部门', 'to_advance_id': tgt.id}, user=op)
+        self.assertEqual(r.status_code, 403)
+        r2 = self._post(self.src.id, {'amount': '10', 'transfer_date': '2026-06-01',
+                                      'reason': '跨部门', 'to_advance_id': tgt.id})
+        self.assertEqual(r2.status_code, 200, r2.content)
+
+    def make_operator(self):
+        u = PaikuanUser(phone='13900003301', name='TransOp', role='operator',
+                        job_title='finance_director', departments=[self.dept, self.other_dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456')
+        u.save()
+        return u
+
+    def test_undo_transfer_guard_and_success(self):
+        tgt = mk_advance(direction='预收', counterparty='客户E', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=1, advance_amount=Decimal('0'))
+        self._post(self.src.id, {'amount': '20000', 'transfer_date': '2026-06-01',
+                                 'reason': '更正', 'to_advance_id': tgt.id})
+        t = AdvanceTransfer.objects.get()
+        # 目标把转入的钱核销掉 → 撤销被拒
+        AdvanceWriteoff.objects.create(advance_record_id=tgt.id, writeoff_no=1,
+                                       amount=Decimal('15000'), writeoff_date=date(2026, 6, 10))
+        tgt.refresh_from_db(); tgt.recompute_derived()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 400)
+        # 删除核销后可撤销，双侧余额复原、账龄承袭清除
+        AdvanceWriteoff.objects.all().delete()
+        AdvanceRecord.objects.get(pk=tgt.id).recompute_derived()
+        rd2 = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd2.status_code, 200, rd2.content)
+        self.src.refresh_from_db(); tgt.refresh_from_db()
+        self.assertEqual(self.src.balance_amount, Decimal('100000.00'))
+        self.assertEqual(tgt.balance_amount, Decimal('0.00'))
+        self.assertIsNone(tgt.aging_base_date)
+
+    def test_writeoff_migrate_pure_only_and_balance_guard(self):
+        # 源上一笔纯登记核销 40000；目标余额 50000 → 可迁
+        AdvanceWriteoff.objects.create(advance_record_id=self.src.id, writeoff_no=1,
+                                       amount=Decimal('40000'), writeoff_date=date(2026, 5, 1))
+        self.src.recompute_derived()
+        tgt = mk_advance(direction='预收', counterparty='客户F', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=2, advance_amount=Decimal('50000'))
+        wo = self.src.writeoffs.get()
+        r = self.client.post(f'/api/pk/ar/advances/{self.src.id}/writeoffs/{wo.id}/migrate',
+                             data=json.dumps({'to_advance_id': tgt.id}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); tgt.refresh_from_db()
+        self.assertEqual(self.src.written_off_amount, Decimal('0.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('100000.00'))
+        self.assertEqual(tgt.written_off_amount, Decimal('40000.00'))
+        self.assertEqual(tgt.balance_amount, Decimal('10000.00'))
+        # 目标余额不足 → 拒绝
+        wo2 = AdvanceWriteoff.objects.create(advance_record_id=self.src.id, writeoff_no=9,
+                                             amount=Decimal('60000'), writeoff_date=date(2026, 5, 2))
+        self.src.recompute_derived()
+        r2 = self.client.post(f'/api/pk/ar/advances/{self.src.id}/writeoffs/{wo2.id}/migrate',
+                              data=json.dumps({'to_advance_id': tgt.id}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 400)
+        # 关联型核销（挂应收）→ 拒绝并给指引
+        rec = ARRecord.objects.create(
+            project=ARProject.objects.create(customer_name='抵扣客', short_name='抵扣项目',
+                                             delivery_dept=self.dept, sales_contact='s',
+                                             project_manager='m'),
+            operation_date=date(2026, 5, 1), estimated_amount=Decimal('1000'))
+        wo2.ar_record = rec
+        wo2.save()
+        r3 = self.client.post(f'/api/pk/ar/advances/{self.src.id}/writeoffs/{wo2.id}/migrate',
+                              data=json.dumps({'to_advance_id': tgt.id}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r3.status_code, 400)
+        self.assertIn('关联', r3.json().get('msg') or r3.json().get('error') or '')
+
+    def test_transfer_does_not_touch_cash_stats(self):
+        # 区间现金口径（收付时间联动）不受转移影响
+        tgt = mk_advance(direction='预收', counterparty='客户G', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=2, occur_date=date(2026, 2, 1),
+                         advance_amount=Decimal('5000'))
+        before = self.client.get('/api/pk/ar/advances',
+                                 {'direction': '预收', 'date_from': '2026-01-01',
+                                  'date_to': '2026-12-31'}, **self.auth()).json()['data']
+        self._post(self.src.id, {'amount': '30000', 'transfer_date': '2026-06-01',
+                                 'reason': '重分类', 'to_advance_id': tgt.id})
+        after = self.client.get('/api/pk/ar/advances',
+                                {'direction': '预收', 'date_from': '2026-01-01',
+                                 'date_to': '2026-12-31'}, **self.auth()).json()['data']
+        b_sum = sum(Decimal(r['advance_amount']) for r in before['items'])
+        a_sum = sum(Decimal(r['advance_amount']) for r in after['items'])
+        self.assertEqual(b_sum, a_sum)   # 区间现金金额列不因转移变化
+
+
+class AdvanceInstallmentMigrateTests(TestCase):
+    """按笔迁移：收付行物理随迁（现金口径更正）、连带核销、余额守卫、可撤销。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        self.admin = PaikuanUser(phone='13900003400', name='MigAdmin', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Test123456')
+        self.admin.save()
+        # 源：两笔收付 60000(1/10) + 40000(2/20)
+        self.src = mk_advance(direction='预收', counterparty='客户A', delivery_dept=self.dept,
+                              occur_year=2026, occur_month=1, occur_date=date(2026, 1, 10),
+                              advance_amount=Decimal('60000'))
+        self.i2 = AdvanceInstallment.objects.create(
+            advance_record=self.src, install_no=2, amount=Decimal('40000'),
+            occur_date=date(2026, 2, 20))
+        self.src.refresh_from_db()
+        self.tgt = mk_advance(direction='预收', counterparty='客户B', delivery_dept=self.dept,
+                              occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+                              advance_amount=Decimal('5000'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(self.admin)}'}
+
+    def _mig(self, body):
+        return self.client.post(f'/api/pk/ar/advances/{self.src.id}/installments/migrate',
+                                data=json.dumps(body), content_type='application/json',
+                                **self.auth())
+
+    def test_migrate_moves_cash_line_and_aging(self):
+        r = self._mig({'installment_ids': [self.i2.id], 'reason': '记错往来单位',
+                       'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db(); self.i2.refresh_from_db()
+        # 现金行物理移动：金额/日期随行，双侧现金总额更正
+        self.assertEqual(self.i2.advance_record_id, self.tgt.id)
+        self.assertEqual(self.i2.occur_date, date(2026, 2, 20))
+        self.assertEqual(self.src.advance_amount, Decimal('60000.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('60000.00'))
+        self.assertEqual(self.tgt.advance_amount, Decimal('45000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('45000.00'))
+        # 账龄承袭迁入行最早收付日
+        self.assertEqual(self.tgt.aging_base_date, date(2026, 2, 20))
+        # 转移单：kind=cash_lines，不计入权益划转合计
+        t = AdvanceTransfer.objects.get()
+        self.assertEqual(t.kind, 'cash_lines')
+        self.assertEqual(self.tgt.transferred_in_amount, Decimal('0.00'))
+
+    def test_migrate_auto_carries_writeoffs_and_splits_boundary(self):
+        # 已核销 90000（单行）→ 迁 40000 笔：自动随迁 40000（拆行），源余额不变
+        AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                       amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        self.src.refresh_from_db()
+        bal_before = self.src.balance_amount          # 100000 − 90000 = 10000
+        r = self._mig({'installment_ids': [self.i2.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        # 源：未核销余额不变（已核销覆盖部分整体平移）；核销行被拆为 50000
+        self.assertEqual(self.src.balance_amount, bal_before)
+        self.assertEqual(self.src.written_off_amount, Decimal('50000.00'))
+        self.assertEqual(self.src.writeoffs.get().amount, Decimal('50000.00'))
+        # 目标：+40000 收付 +40000 核销 → 余额也不变
+        self.assertEqual(self.tgt.written_off_amount, Decimal('40000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('5000.00'))
+        # 撤销：拆行拼回 90000、目标拆出行删除、双侧复原
+        t = AdvanceTransfer.objects.get()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.writeoffs.get().amount, Decimal('90000.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('10000.00'))
+        self.assertEqual(self.tgt.writeoffs.count(), 0)
+        self.assertEqual(self.tgt.balance_amount, Decimal('5000.00'))
+
+    def test_migrate_carry_none_rejected_when_covered(self):
+        # 不随迁模式：被核销覆盖时拒绝
+        AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                       amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        r = self._mig({'installment_ids': [self.i2.id], 'carry_mode': 'none',
+                       'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 400)
+        # 关联型核销占满 → auto 也无纯核销可迁 → 拒绝并说明
+        wo = self.src.writeoffs.get()
+        rec = ARRecord.objects.create(
+            project=ARProject.objects.create(customer_name='占客', short_name='占项目',
+                                             delivery_dept=self.dept, sales_contact='s',
+                                             project_manager='m'),
+            operation_date=date(2026, 5, 1), estimated_amount=Decimal('1000'))
+        wo.ar_record = rec
+        wo.save()
+        r2 = self._mig({'installment_ids': [self.i2.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r2.status_code, 400)
+        self.assertIn('关联', (r2.json().get('msg') or r2.json().get('error') or ''))
+
+    def test_migrate_batch_multiple_installments(self):
+        # 批量：两笔一次迁走（含自动随迁），目标承接现金与核销
+        AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                       amount=Decimal('70000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        i1 = self.src.installments.get(install_no=1)
+        r = self._mig({'installment_ids': [i1.id, self.i2.id], 'reason': '整户搬迁',
+                       'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.advance_amount, Decimal('0.00'))
+        self.assertEqual(self.src.written_off_amount, Decimal('0.00'))
+        self.assertEqual(self.src.balance_amount, Decimal('0.00'))
+        self.assertEqual(self.tgt.advance_amount, Decimal('105000.00'))
+        self.assertEqual(self.tgt.written_off_amount, Decimal('70000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('35000.00'))
+
+    def test_migrate_with_writeoff_carry_success_and_undo(self):
+        # 源核销 30000（覆盖第2笔的一部分）；迁第2笔(40000)+核销(30000) → 双侧均非负
+        wo = AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                            amount=Decimal('30000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        r = self._mig({'installment_ids': [self.i2.id], 'writeoff_ids': [wo.id],
+                       'reason': '整笔挂错', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.advance_amount, Decimal('60000.00'))
+        self.assertEqual(self.src.written_off_amount, Decimal('0.00'))
+        self.assertEqual(self.tgt.advance_amount, Decimal('45000.00'))
+        self.assertEqual(self.tgt.written_off_amount, Decimal('30000.00'))
+        self.assertEqual(self.tgt.balance_amount, Decimal('15000.00'))
+        # 撤销：行搬回、双侧复原、账龄清除
+        t = AdvanceTransfer.objects.get()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.src.refresh_from_db(); self.tgt.refresh_from_db()
+        self.assertEqual(self.src.advance_amount, Decimal('100000.00'))
+        self.assertEqual(self.src.written_off_amount, Decimal('30000.00'))
+        self.assertEqual(self.tgt.advance_amount, Decimal('5000.00'))
+        self.assertEqual(self.tgt.written_off_amount, Decimal('0.00'))
+        self.assertIsNone(self.tgt.aging_base_date)
+        self.assertEqual(self.src.installments.count(), 2)
+        # 撤销摘除迁入标注：行备注恢复干净
+        self.i2.refresh_from_db()
+        self.assertNotIn('迁入', self.i2.notes or '')
+        self.assertNotIn('迁入', self.src.writeoffs.first().notes or '')
+
+    def test_migrate_guards(self):
+        # 关联型核销不可随迁
+        rec = ARRecord.objects.create(
+            project=ARProject.objects.create(customer_name='抵客', short_name='抵项目',
+                                             delivery_dept=self.dept, sales_contact='s',
+                                             project_manager='m'),
+            operation_date=date(2026, 5, 1), estimated_amount=Decimal('1000'))
+        wo = AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                            amount=Decimal('10000'),
+                                            writeoff_date=date(2026, 3, 1), ar_record=rec)
+        self.src.recompute_derived()
+        r = self._mig({'installment_ids': [self.i2.id], 'writeoff_ids': [wo.id],
+                       'reason': 'x', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('关联', (r.json().get('msg') or r.json().get('error') or ''))
+        # 无原因 / 空明细 / 方向不符
+        self.assertEqual(self._mig({'installment_ids': [self.i2.id], 'reason': '',
+                                    'to_advance_id': self.tgt.id}).status_code, 400)
+        self.assertEqual(self._mig({'installment_ids': [], 'reason': 'x',
+                                    'to_advance_id': self.tgt.id}).status_code, 400)
+        pay = mk_advance(direction='预付', counterparty='供X', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=1, advance_amount=Decimal('1'))
+        self.assertEqual(self._mig({'installment_ids': [self.i2.id], 'reason': 'x',
+                                    'to_advance_id': pay.id}).status_code, 400)
+
+    def test_undo_split_rebuild_avoids_no_collision(self):
+        # F1 回归：拆分源行在撤销前被删除 → 重建行取号须避开按 orig 恢复的行
+        for no, amt, d in ((1, '20000', date(2026, 1, 5)), (2, '30000', date(2026, 2, 5)),
+                           (3, '40000', date(2026, 3, 5))):
+            AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=no,
+                                           amount=Decimal(amt), writeoff_date=d)
+        self.src.recompute_derived()
+        # 迁 60000（第1笔）→ FIFO 整迁 #1#2，#3 拆出 10000
+        i1 = self.src.installments.get(install_no=1)
+        r = self._mig({'installment_ids': [i1.id], 'reason': '更正', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        # 删除源侧剩余的 #3（合法操作）
+        left = self.src.writeoffs.get()
+        self.client.delete(f'/api/pk/ar/advances/{self.src.id}/writeoffs/{left.id}', **self.auth())
+        # 撤销：曾经 500（重建行撞唯一键），现须成功
+        t = AdvanceTransfer.objects.get()
+        rd = self.client.delete(f'/api/pk/ar/advances/{self.src.id}/transfers/{t.id}', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.src.refresh_from_db()
+        nos = sorted(self.src.writeoffs.values_list('writeoff_no', flat=True))
+        self.assertEqual(len(nos), len(set(nos)))   # 无重号
+        self.assertEqual(self.src.written_off_amount, Decimal('60000.00'))
+
+    def test_new_target_guard_leaves_no_orphan(self):
+        # F2 回归：manual 随迁核销超过迁入额 + 新建目标 → 400 且不留孤儿记录
+        wo = AdvanceWriteoff.objects.create(advance_record=self.src, writeoff_no=1,
+                                            amount=Decimal('90000'), writeoff_date=date(2026, 3, 1))
+        self.src.recompute_derived()
+        before = AdvanceRecord.objects.count()
+        r = self._mig({'installment_ids': [self.i2.id], 'writeoff_ids': [wo.id],
+                       'reason': 'x', 'new_target': {'counterparty': '孤儿客'}})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(AdvanceRecord.objects.count(), before)   # 无孤儿
+
+    def test_negative_net_and_conflict_params_rejected(self):
+        # F3 回归：仅负额/净零选择 → 400 明确提示；F6 回归：auto+writeoff_ids 冲突 → 400
+        neg = AdvanceInstallment.objects.create(advance_record=self.src, install_no=3,
+                                                amount=Decimal('-300'), occur_date=date(2026, 3, 1))
+        self.src.refresh_from_db()
+        r = self._mig({'installment_ids': [neg.id], 'reason': 'x', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('大于0', (r.json().get('msg') or r.json().get('error') or ''))
+        r2 = self._mig({'installment_ids': [self.i2.id], 'carry_mode': 'auto',
+                        'writeoff_ids': [1], 'reason': 'x', 'to_advance_id': self.tgt.id})
+        self.assertEqual(r2.status_code, 400)
+
+    def test_mixed_sign_migration_and_aging_ignores_negative(self):
+        # F4/F7 回归：正负混选（净正）迁到低余额目标成功；账龄基准不被负额行钉早
+        neg = AdvanceInstallment.objects.create(advance_record=self.src, install_no=3,
+                                                amount=Decimal('-300'), occur_date=date(2025, 1, 1))
+        self.src.refresh_from_db()
+        low = mk_advance(direction='预收', counterparty='低余额', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+                         advance_amount=Decimal('100'))
+        r = self._mig({'installment_ids': [neg.id, self.i2.id], 'reason': '混合迁移',
+                       'to_advance_id': low.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        low.refresh_from_db()
+        self.assertEqual(low.advance_amount, Decimal('39800.00'))   # 100+40000−300
+        self.assertEqual(low.aging_base_date, date(2026, 2, 20))    # 忽略 2025 的退回行
+
+    def test_migrate_refund_covered_rejected_with_clear_msg(self):
+        # 预付被退款冲抵时迁移被拒，报错须指明「退款」而非误导为「核销」
+        from ar.models import DailyReceipt
+        pay = mk_advance(direction='预付', counterparty='供应商R', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=1, occur_date=date(2026, 1, 10),
+                         advance_amount=Decimal('50000'))
+        DailyReceipt.objects.create(source='预付退款', advance_record=pay,
+                                    amount=Decimal('50000'), receipt_date=date(2026, 2, 1),
+                                    delivery_dept=self.dept)
+        pay.refresh_from_db(); pay.recompute_derived(); pay.refresh_from_db()
+        self.assertEqual(pay.balance_amount, Decimal('0.00'))
+        tgt = mk_advance(direction='预付', counterparty='供应商Rt', delivery_dept=self.dept,
+                         occur_year=2026, occur_month=3, advance_amount=Decimal('0'))
+        inst = pay.installments.get()
+        r = self.client.post(f'/api/pk/ar/advances/{pay.id}/installments/migrate',
+                             data=json.dumps({'installment_ids': [inst.id], 'reason': 'x',
+                                              'to_advance_id': tgt.id}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        msg = r.json().get('msg') or r.json().get('error') or ''
+        self.assertIn('退款', msg)
+        self.assertNotIn('请先撤销对应关联核销后重试', msg)   # 不再套用核销文案
+        # 数据未变
+        pay.refresh_from_db(); tgt.refresh_from_db()
+        self.assertEqual(pay.balance_amount, Decimal('0.00'))
+        self.assertEqual(tgt.installments.count(), 0)
+
+    def test_migrate_to_new_target_with_project(self):
+        proj = ARProject.objects.create(customer_name='新客', short_name='落位项目',
+                                        delivery_dept=self.dept, sales_contact='s',
+                                        project_manager='m')
+        r = self._mig({'installment_ids': [self.i2.id], 'reason': '项目落位',
+                       'new_target': {'counterparty': '客户A', 'project_id': proj.id}})
+        self.assertEqual(r.status_code, 200, r.content)
+        tid = r.json()['data']['target_id']
+        tgt = AdvanceRecord.objects.get(pk=tid)
+        self.assertEqual(tgt.project_id, proj.id)
+        self.assertEqual(tgt.advance_amount, Decimal('40000.00'))
+        self.assertEqual(tgt.aging_base_date, date(2026, 2, 20))
+
+
 class AdvanceCashTimingTests(TestCase):
     """预收预付现金口径：真实收付=分期收付日期，发生年月仅为合作归属维度。
 
@@ -5254,3 +5793,193 @@ class AdvanceCashTimingTests(TestCase):
         self.assertEqual(k['预收']['advance_amount'], 600.0)   # 区间实际收付，非整笔 1000
         k_all = self.client.get('/api/pk/ar/advances/kpi', **self.auth()).json()['data']
         self.assertEqual(k_all['预收']['advance_amount'], 1000.0)  # 无区间=全额
+
+    def test_by_counterparty_groups_projects_and_range_cash(self):
+        """按单位聚合：单位→项目两级；散单归（未挂项目）；选区间时金额=实际收付。"""
+        proj = ARProject.objects.create(
+            customer_name='合作客户A', short_name='聚合项目甲', delivery_dept=self.dept,
+            sales_contact='s', project_manager='m')
+        # setUp 的 rec(1000, 3月600/4月400) 挂到项目甲
+        AdvanceRecord.objects.filter(pk=self.rec.pk).update(project=proj)
+        # 同客户散单 200（5月收付）
+        mk_advance(direction='预收', delivery_dept=self.dept, counterparty='合作客户A',
+                   occur_year=2026, occur_month=2, occur_date=date(2026, 5, 3),
+                   advance_amount=Decimal('200'), balance_amount=Decimal('200'))
+        # 另一部门客户B —— 部门隔离下的可见性由 _advance_dept_filter 保证（超管可见）
+        mk_advance(direction='预收', delivery_dept='劳务事业部', counterparty='客户B',
+                   occur_year=2026, occur_month=2, occur_date=date(2026, 3, 8),
+                   advance_amount=Decimal('900'), balance_amount=Decimal('900'))
+
+        # 全周期：客户A = 2笔 / 1项目+散单 / 金额1200
+        d = self.client.get('/api/pk/ar/advances/by-counterparty',
+                            {'direction': '预收'}, **self.auth()).json()['data']
+        self.assertFalse(d['cash_basis'])
+        rows = {r['counterparty']: r for r in d['rows']}
+        a = rows['合作客户A']
+        self.assertEqual(a['count'], 2)
+        self.assertEqual(a['project_count'], 1)
+        self.assertEqual(float(a['advance_amount']), 1200.0)
+        pj = {p['short_name']: p for p in a['projects']}
+        self.assertEqual(float(pj['聚合项目甲']['advance_amount']), 1000.0)
+        self.assertEqual(float(pj['（未挂项目）']['advance_amount']), 200.0)
+        self.assertIn('客户B', rows)
+
+        # 3月区间：现金口径——客户A 金额=600（仅项目甲3月分期），散单(5月)整条不命中
+        d3 = self.client.get('/api/pk/ar/advances/by-counterparty',
+                             {'direction': '预收', 'start_date': '2026-03-01',
+                              'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        self.assertTrue(d3['cash_basis'])
+        rows3 = {r['counterparty']: r for r in d3['rows']}
+        a3 = rows3['合作客户A']
+        self.assertEqual(float(a3['advance_amount']), 600.0)
+        names3 = [p['short_name'] for p in a3['projects']]
+        self.assertNotIn('（未挂项目）', names3)   # 散单区间外不出现
+        # 余额是存量口径，不随区间切割
+        self.assertEqual(float(a3['balance']), 1000.0)
+
+    def test_list_rows_and_summary_follow_range_cash_basis(self):
+        """行级联动（用户反馈的BUG）：选收付区间后，列表每行的 金额/已核销 都须为
+        区间内分期收付/核销合计，而非记录整笔存量；筛选合计同口径；排序按区间值。"""
+        # setUp 的 rec：1000 整笔，分期 3月600 / 4月400；补一笔 3月核销 250
+        AdvanceWriteoff.objects.create(advance_record=self.rec, writeoff_no=1,
+                                       amount=Decimal('250'), writeoff_date=date(2026, 3, 20))
+        AdvanceRecord.objects.filter(pk=self.rec.pk).update(
+            written_off_amount=Decimal('250'), balance_amount=Decimal('750'))
+
+        # 3月区间：行内金额=600（非1000），已核销=250；合计同口径
+        d = self.client.get('/api/pk/ar/advances',
+                            {'direction': '预收', 'start_date': '2026-03-01',
+                             'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        self.assertTrue(d['cash_basis'])
+        row = d['items'][0]
+        self.assertEqual(float(row['advance_amount']), 600.0)
+        self.assertEqual(float(row['written_off_amount']), 250.0)
+        self.assertEqual(float(d['summary']['预收']['advance_amount']), 600.0)
+        self.assertEqual(float(d['summary']['预收']['written_off']), 250.0)
+
+        # 4月区间：金额=400、核销=0（3月的核销不算入4月）
+        d4 = self.client.get('/api/pk/ar/advances',
+                             {'direction': '预收', 'start_date': '2026-04-01',
+                              'end_date': '2026-04-30'}, **self.auth()).json()['data']
+        self.assertEqual(float(d4['items'][0]['advance_amount']), 400.0)
+        self.assertEqual(float(d4['items'][0]['written_off_amount']), 0.0)
+
+        # 无区间：回到整笔存量口径
+        da = self.client.get('/api/pk/ar/advances', {'direction': '预收'},
+                             **self.auth()).json()['data']
+        self.assertFalse(da['cash_basis'])
+        self.assertEqual(float(da['items'][0]['advance_amount']), 1000.0)
+        self.assertEqual(float(da['items'][0]['written_off_amount']), 250.0)
+
+        # KPI：区间核销联动、核销率仍为全周期进度 (250/1000=25%)
+        k = self.client.get('/api/pk/ar/advances/kpi',
+                            {'start_date': '2026-04-01', 'end_date': '2026-04-30'},
+                            **self.auth()).json()['data']['预收']
+        self.assertEqual(k['written_off'], 0.0)
+        self.assertEqual(k['writeoff_rate'], 25.0)
+
+        # 按单位聚合：区间核销同口径
+        bc = self.client.get('/api/pk/ar/advances/by-counterparty',
+                             {'direction': '预收', 'start_date': '2026-03-01',
+                              'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        r0 = bc['rows'][0]
+        self.assertEqual(float(r0['advance_amount']), 600.0)
+        self.assertEqual(float(r0['written_off']), 250.0)
+
+
+class ARInvoiceEntryTests(TestCase):
+    """开票明细：多次开票，主表三字段派生（Σ金额/首开日/税额），上限与批次互斥守卫。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002200', name='InvAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='开票客户', short_name='开票项目', delivery_dept=self.dept,
+            sales_contact='s', project_manager='m',
+            invoice_mode='全额', tax_rate=Decimal('0.06'))
+        self.rec = ARRecord.objects.create(
+            project=self.proj, operation_date=date(2026, 5, 1),
+            estimated_amount=Decimal('100000'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, body):
+        return self.client.post(f'/api/pk/ar/records/{self.rec.id}/invoices',
+                                data=json.dumps(body), content_type='application/json',
+                                **self.auth())
+
+    def test_multiple_entries_derive_record_fields(self):
+        # 第1次 60000（6/10）→ 第2次 40000（7/5）：合计10万、首开日6/10、全额税自动
+        r1 = self._post({'amount': '60000', 'invoice_date': '2026-06-10'})
+        self.assertEqual(r1.status_code, 200, r1.content)
+        r2 = self._post({'amount': '40000', 'invoice_date': '2026-07-05'})
+        d = r2.json()['data']
+        self.assertEqual(len(d['invoice_entries']), 2)
+        self.assertEqual(float(d['actual_invoice_amount']), 100000.0)
+        self.assertEqual(d['invoice_date'], '2026-06-10')          # 首次开票日
+        self.rec.refresh_from_db()
+        # 全额模式税额按合计自动：100000/1.06*0.06
+        self.assertEqual(self.rec.tax_amount,
+                         (Decimal('100000') / Decimal('1.06') * Decimal('0.06'))
+                         .quantize(Decimal('0.01')))
+
+        # 删除第2次 → 回退到 60000、税额随之重算
+        eid = d['invoice_entries'][1]['id']
+        rd = self.client.delete(f'/api/pk/ar/records/{self.rec.id}/invoices/{eid}', **self.auth())
+        self.assertEqual(rd.status_code, 200)
+        self.assertEqual(float(rd.json()['data']['actual_invoice_amount']), 60000.0)
+
+    def test_cap_and_negative_guards(self):
+        # 上限：累计 ≤ 上账+差额
+        self.assertEqual(self._post({'amount': '120000', 'invoice_date': '2026-06-10'}).status_code, 400)
+        self._post({'amount': '80000', 'invoice_date': '2026-06-10'})
+        self.assertEqual(self._post({'amount': '30000', 'invoice_date': '2026-07-01'}).status_code, 400)
+        # 红冲合法、冲成负数拒绝
+        self.assertEqual(self._post({'amount': '-20000', 'invoice_date': '2026-07-02'}).status_code, 200)
+        self.assertEqual(self._post({'amount': '-70000', 'invoice_date': '2026-07-03'}).status_code, 400)
+
+    def test_batch_linked_record_rejected_and_put_guard(self):
+        # 挂批次的记录不得建记录级明细
+        ARRecord.objects.filter(pk=self.rec.pk).update(invoice_batch_no='PF-001')
+        self.rec.refresh_from_db()
+        self.assertEqual(self._post({'amount': '1000', 'invoice_date': '2026-06-10'}).status_code, 400)
+        ARRecord.objects.filter(pk=self.rec.pk).update(invoice_batch_no='')
+        self.rec.refresh_from_db()
+        # 有明细后：PUT 直改开票金额被拒（回传原值放行）；再挂批次也被拒
+        self._post({'amount': '50000', 'invoice_date': '2026-06-10'})
+        def put(body):
+            return self.client.put(f'/api/pk/ar/records/{self.rec.id}',
+                                   data=json.dumps(body), content_type='application/json',
+                                   **self.auth())
+        self.assertEqual(put({'actual_invoice_amount': '70000'}).status_code, 400)
+        self.assertEqual(put({'actual_invoice_amount': '50000'}).status_code, 200)   # 原值放行
+        self.assertEqual(put({'invoice_batch_no': 'PF-002'}).status_code, 400)
+
+    def test_list_include_payments_carries_invoice_entries(self):
+        # 列表（编辑态数据源）必须带出 invoice_entries，否则重开编辑框明细为空
+        self._post({'amount': '30000', 'invoice_date': '2026-06-10'})
+        self._post({'amount': '20000', 'invoice_date': '2026-07-08'})
+        resp = self.client.get('/api/pk/ar/records?include_payments=1', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        row = next(r for r in resp.json()['data']['items'] if r['id'] == self.rec.id)
+        self.assertEqual([e['amount'] for e in row['invoice_entries']],
+                         ['30000.00', '20000.00'])
+        self.assertEqual(float(row['actual_invoice_amount']), 50000.0)
+
+    def test_create_with_invoice_makes_entry_one(self):
+        resp = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-06-01',
+            'estimated_amount': '5000', 'actual_invoice_amount': '5000',
+            'invoice_date': '2026-06-15'}), content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rid = resp.json()['data']['id']
+        entries = ARInvoiceEntry.objects.filter(ar_record_id=rid)
+        self.assertEqual(entries.count(), 1)
+        self.assertEqual(entries.first().amount, Decimal('5000'))

@@ -272,11 +272,11 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
         </div>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传金蝶数据</button>
         <div v-if="auth.isSuperAdmin" class="clear-wrap">
-          <button class="btn btn-ghost btn-sm clear-btn" :disabled="clearing" title="超管一键清除内部往来数据"
+          <button class="btn btn-ghost btn-sm clear-btn" :disabled="clearing" title="清除内部往来数据（仅超级管理员可用，删除后不可恢复）"
                   @click="showClearMenu = !showClearMenu">🗑 清除数据</button>
           <div v-if="showClearMenu" class="clear-backdrop" @click="showClearMenu = false"></div>
           <div v-if="showClearMenu" class="clear-pop">
-            <div class="cp-title">一键清除内部往来（超管）</div>
+            <div class="cp-title">清除内部往来数据（仅超级管理员）</div>
             <button class="cp-item" :disabled="clearing" @click="doClear('month')">
               清除本期<i>{{ year }}年{{ month }}月 · 全部主体</i></button>
             <div class="cp-row">
@@ -290,7 +290,7 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
               清除全部<i>所有主体 · 所有期间</i></button>
           </div>
         </div>
-        <span v-if="kpi.unmatched_rows" class="warn-chip" title="维度原文无法识别为集团内主体的行（按外部往来处理，不参与核对）">
+        <span v-if="kpi.unmatched_rows" class="warn-chip" title="核算维度中的往来单位无法识别为集团内主体的行（按外部往来处理，不参与核对）">
           ⚠ 未识别 {{ kpi.unmatched_rows }} 行</span>
       </div>
     </header>
@@ -371,7 +371,7 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
             <span class="lg-item"><i class="lg lg-ok"></i>✓ 核平</span>
             <span class="lg-item"><i class="lg lg-diff"></i>差异（越深差异越大）</span>
             <span class="lg-item"><i class="lg lg-partial"></i>单边数据</span>
-            <span class="lg-note">格内 = 行主体账上对列主体的净头寸（应收 + / 应付 −），单位随金额自动万/亿</span>
+            <span class="lg-note">格内 = 行主体账上对列主体的往来净额（应收 + / 应付 −），单位随金额自动万/亿</span>
           </div>
         </div>
 

@@ -143,12 +143,15 @@ const schemes = useTableSchemes('pk_approvals', {
 // ── 筛选条件 chips ───────────────────────────────────────────────────────────
 const _OP_LABEL = { contains: '含 ', not_contains: '不含 ', eq: '= ', ne: '≠ ', gt: '> ', gte: '≥ ',
                     lt: '< ', lte: '≤ ', startswith: '开头 ', endswith: '结尾 ', empty: '为空', not_empty: '非空' }
-function describeFilterVal(f) {
+// 枚举值展示中文：筛选 chip 不能把 pending/approved 这类库值直接吐给用户
+const _ENUM_ZH = { status: { pending: '待审批', approved: '审批通过', rejected: '已拒绝', canceled: '已撤销' } }
+const _zhVal = (field, v) => _ENUM_ZH[field]?.[v] ?? v
+function describeFilterVal(f, field) {
   if (!f) return ''
   if (f.op === 'empty' || f.op === 'not_empty') return _OP_LABEL[f.op]
-  if (Array.isArray(f.value)) return f.value.join('/')
+  if (Array.isArray(f.value)) return f.value.map(v => _zhVal(field, v)).join('/')
   if (f.value2 !== undefined && f.value2 !== null && f.value2 !== '') return `${f.value}~${f.value2}`
-  return (_OP_LABEL[f.op] || '') + (f.value ?? '')
+  return (_OP_LABEL[f.op] || '') + _zhVal(field, f.value ?? '')
 }
 const _APR_LABELS = { applicant: '申请人', department: '事业部', secondary_dept: '二级部门',
   project_short_name: '项目简称', approval_number: '审批编号', g7_number: 'G7编号', summary: '摘要',
@@ -157,7 +160,7 @@ const _APR_LABELS = { applicant: '申请人', department: '事业部', secondary
 const filterChips = computed(() => {
   const chips = []
   Object.entries(colFilters).forEach(([field, f]) => {
-    if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f)}`, clear: () => setColFilter(field, null) })
+    if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f, field)}`, clear: () => setColFilter(field, null) })
   })
   if (numbersFilter.value) chips.push({ key: 'nums', text: `批量单号(${numbersFilter.value.split(',').length})`, clear: () => { numbersFilter.value = ''; page.value = 1; load() } })
   if (q.value) chips.push({ key: 'q', text: `关键字: ${q.value}`, clear: () => { q.value = ''; page.value = 1; load() } })
@@ -201,7 +204,14 @@ function buildParams() {
   if (numbersFilter.value) p.numbers = numbersFilter.value
   if (dateStart.value) p.start_date = dateStart.value
   if (dateEnd.value) p.end_date = dateEnd.value
+  if (closedView.value) p.closed = closedView.value   // only=只看已关闭排款
   return p
+}
+// 已关闭剩余排款的记录默认移出列表（避免堆积）；此开关可单独调出查看/撤销
+const closedView = ref('')
+function toggleClosedView(){
+  closedView.value = closedView.value === 'only' ? '' : 'only'
+  page.value = 1; clearSelection(); load()
 }
 let _qTimer = null
 watch(() => q.value, () => {
@@ -554,6 +564,9 @@ const deptChoices = computed(() => {
   if (auth.isAdmin && !auth.activeDepts.length) return depts.value
   return depts.value.filter(d => scope.includes(d))
 })
+// 列头筛选选项：/departments 未返回或为空时回退登录态可见部门，保证超管始终能按全部事业部筛
+const deptFilterOpts = computed(() =>
+  (deptChoices.value && deptChoices.value.length) ? deptChoices.value : auth.effectiveDepts)
 
 const jumpPage = ref(1)
 function doJump() {
@@ -589,7 +602,79 @@ const apprNoInputRef = ref(null)
 function openCreate(){ editId.value=null; contSaved.value=0; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
-function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
+function openEdit(it){ editId.value=it.id; editRec.value = it; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true
+  // 编辑弹窗内嵌「排款计划」：与行内展开面板同一份数据/接口（单一正源）
+  Object.assign(aprAddPlan, { planned_date:'', amount:'', notes:'', busy:false })
+  Object.assign(closeForm, { reason:'', busy:false, show:false })
+  loadAprSchedDetail(it.id)
+}
+// ── 编辑弹窗内的排款计划：追加批次 / 结案 ────────────────────────────────────
+const editRec = ref(null)
+const aprAddPlan = reactive({ planned_date:'', amount:'', notes:'', busy:false })
+const closeForm = reactive({ reason:'', busy:false, show:false })
+const editSched = computed(() => (editId.value ? aprSchedCache.value[editId.value] : null))
+const editPlanItems = computed(() => editSched.value?.data?.plan_items || [])
+const editScheduled = computed(() => editPlanItems.value.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0))
+const editUnscheduled = computed(() => {
+  const amt = parseFloat(editRec.value?.amount || form.amount || 0) || 0
+  return +(amt - editScheduled.value).toFixed(2)
+})
+const editClosed = computed(() => !!editRec.value?.schedule_closed)
+
+async function refreshEditRec(){
+  if (!editId.value) return
+  await loadAprSchedDetail(editId.value)
+  await load()
+  // 列表刷新后回读本条最新快照（已排/剩余/结案态随之更新）
+  const hit = items.value.find(x => x.id === editId.value)
+  if (hit) editRec.value = hit
+}
+
+async function addEditPlanItem(){
+  if (aprAddPlan.busy || !editId.value) return
+  const amt = parseFloat(aprAddPlan.amount)
+  if (!aprAddPlan.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  if (amt > editUnscheduled.value + 0.005) { toast.warn(`本批 ${amt} 超过剩余可排 ${editUnscheduled.value}`); return }
+  aprAddPlan.busy = true
+  try {
+    const pid = editSched.value?.data?.payment_id
+    if (pid) {
+      await api.post(`/payments/${pid}/plan-items`, { planned_date: aprAddPlan.planned_date, amount: amt, notes: aprAddPlan.notes })
+    } else {
+      // 尚未排过款：走审批排款入口（建付款汇总 + 首批计划）
+      await api.post(`/approvals/${editId.value}/schedule`, { planned_date: aprAddPlan.planned_date, total_amount: amt })
+    }
+    toast.success('已追加排款批次')
+    Object.assign(aprAddPlan, { planned_date:'', amount:'', notes:'' })
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'追加失败') } finally { aprAddPlan.busy = false }
+}
+
+async function doCloseSchedule(){
+  if (closeForm.busy || !editId.value) return
+  if (!closeForm.reason.trim()) { toast.warn('请填写关闭原因，以便日后追溯'); return }
+  closeForm.busy = true
+  try {
+    const r = await api.post(`/approvals/${editId.value}/close-schedule`, { reason: closeForm.reason })
+    toast.success(r.data?.message || '已关闭剩余排款')
+    if (r.data) editRec.value = r.data
+    Object.assign(closeForm, { reason:'', show:false })
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'关闭失败') } finally { closeForm.busy = false }
+}
+
+async function undoCloseSchedule(){
+  if (closeForm.busy || !editId.value) return
+  if (!(await confirmDlg('撤销关闭？该审批将回到可排款状态并回到审批列表，剩余额度重新计入未排合计。'))) return
+  closeForm.busy = true
+  try {
+    const r = await api.delete(`/approvals/${editId.value}/close-schedule`)
+    toast.success(r.data?.message || '已撤销关闭')
+    if (r.data) editRec.value = r.data
+    await refreshEditRec()
+  } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally { closeForm.busy = false }
+}
 const contSaved = ref(0)
 async function create(andContinue = false){
   if(saving.value) return; saving.value=true
@@ -679,7 +764,12 @@ const ctxItems = computed(() => {
       hint: isDingtalkNo(i.approval_number) ? '' : '审批编号非21位钉钉编号',
       action: r => dingtalkStatusSync([r.id]),
     },
-    { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
+    // 归档记录禁编辑；但「排款已关闭」是人工可逆决策——必须能进弹窗撤销关闭/调排款批次
+    { key: 'edit', label: i.schedule_closed ? '编辑排款计划 / 撤销关闭' : '编辑审批记录',
+      icon: 'edit', shortcut: 'E', hidden: !auth.canCreate,
+      disabled: i.archived && !i.schedule_closed, action: r => openEdit(r) },
+    { key: 'reopen', label: '撤销关闭排款', icon: 'refresh', hidden: !auth.canCreate || !i.schedule_closed,
+      action: r => { editId.value = r.id; editRec.value = r; undoCloseSchedule().then(() => { editId.value = null; editRec.value = null }) } },
     { key: 'clone', label: '以此新建', icon: 'copy', hidden: !auth.canCreate, action: r => createFrom(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
     { key: 'del', label: '删除审批记录', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteOne(r) },
@@ -945,7 +1035,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="topbar-tools" v-show="subtab === 'list'">
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
-            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
+            title="运输事业部专用：上传运输系统导出的对账单原始表，金额统一按正数入账、重复对账单号只保留一条，生成「审批通过」记录，可直接排款进付款管理">
       <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
@@ -968,16 +1058,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
   </div>
   <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
+  <!-- 登记时间预设条：右端并入「排款已关闭」视图开关（同为列表范围筛选，不另占行） -->
   <div class="apr-timebar">
     <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
-  </div>
-  <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
-  <div v-if="filterChips.length" class="chips-row">
     <span v-for="c in filterChips" :key="c.key" class="fchip">
       {{ c.text }}<button class="fchip-x" :aria-label="`移除筛选 ${c.text}`" @click="c.clear()">×</button>
     </span>
+    <button class="cv-chip" :class="{ on: closedView === 'only' }"
+            :title="closedView === 'only'
+              ? '当前只显示已关闭剩余排款的审批（剩余额度不再执行，不计入未排合计）；点此返回常规列表'
+              : '已「关闭剩余排款」的审批默认不在列表中；点此单独查看，可右键撤销关闭'"
+            @click="toggleClosedView">{{ closedView === 'only' ? '✕ 排款已关闭' : '排款已关闭' }}</button>
   </div>
+  <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
@@ -999,7 +1093,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
       <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
-      <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
+      <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptFilterOpts" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
       <th><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
       <th><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
       <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
@@ -1038,7 +1132,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </div>
       </td>
       <td class="amt" :title="fmtMoney(i.amount)">{{ fmtMoney(i.amount) }}</td>
-      <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
+      <td class="amt sched-c plan-cell" :title="i.schedule_closed ? `排款已关闭：${i.schedule_closed_reason || ''}` : (parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : '')"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
           {{ fmtMoney(i.scheduled_amount) }}
@@ -1135,7 +1229,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay" tabindex="-1" @keyup.escape.capture="showCreate = false"><div class="modal-box"><div class="modal-header"><h3>{{ editId ? '编辑审批记录' : '新增审批记录' }}</h3></div><div class="modal-body">
     <p v-if="editId" style="font-size:12px;color:var(--muted);margin:0 0 12px">
-      申请金额仅「待审批」状态可改（已审批请先退回待审批）；设为「审批通过/已拒绝」需审批权限；已排款/已归档记录不可在此编辑。
+      申请金额仅「待审批」状态可改（已审批请先退回待审批，且不得低于已排款）；设为「审批通过/已拒绝」需审批权限；已归档记录的审批字段不可改，但下方排款计划仍可调整。
     </p>
     <div class="form-grid">
     <label class="form-field"><span>申请人*</span><input ref="applicantInputRef" v-model="form.applicant"/></label>
@@ -1143,13 +1237,77 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
     <label class="form-field"><span>审批编号</span><input ref="apprNoInputRef" v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
-    <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
+    <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，多个单号用「/」分隔，最多255个字符" maxlength="255"/></label>
     <label class="form-field"><span>摘要</span><input ref="summaryInputRef" v-model="form.summary"/></label>
     <label class="form-field"><span>备注</span><input v-model="form.notes" placeholder="选填"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
+  </div>
+
+  <!-- 排款计划（编辑态）：分批排款调整就在这里，不必再去付款管理 -->
+  <div v-if="editId" class="ep-sec">
+    <div class="ep-head">
+      <span class="ep-title">排款计划</span>
+      <span class="ep-sum">申请 <b>¥{{ editRec?.amount || form.amount }}</b> · 已排 <b class="ok">¥{{ editScheduled.toFixed(2) }}</b> ·
+        <template v-if="editClosed">剩余 <b class="closed">¥{{ editUnscheduled.toFixed(2) }}</b> 已关闭不再排</template>
+        <template v-else>剩余可排 <b class="warn">¥{{ editUnscheduled.toFixed(2) }}</b></template>
+      </span>
+      <span v-if="editClosed" class="ep-closed-tag" :title="`关闭原因：${editRec?.schedule_closed_reason || '—'}`">排款已关闭</span>
+    </div>
+
+    <div v-if="editSched?.loading" class="ep-tip">加载中…</div>
+    <template v-else>
+      <div v-if="editPlanItems.length" class="ep-list">
+        <div v-for="pi in editPlanItems" :key="pi.id" class="ep-item">
+          <template v-if="aprPlanEdit.id === pi.id && aprPlanEdit.approval_id === editId">
+            <span class="ep-seq">第{{ pi.seq }}批</span>
+            <input v-model="aprPlanEdit.planned_date" type="date" class="ep-inp" />
+            <input v-model="aprPlanEdit.amount" type="number" step="0.01" class="ep-inp ep-amt" placeholder="金额" />
+            <input v-model="aprPlanEdit.notes" type="text" class="ep-inp ep-note" placeholder="备注" />
+            <button class="ep-btn primary" :disabled="aprPlanEdit.busy" @click="saveAprPlanEdit(editId).then(refreshEditRec)">保存</button>
+            <button class="ep-btn" :disabled="aprPlanEdit.busy" @click="cancelAprPlanEdit">取消</button>
+          </template>
+          <template v-else>
+            <span class="ep-seq">第{{ pi.seq }}批</span>
+            <span class="ep-date">{{ pi.planned_date }}</span>
+            <b class="ep-money">¥{{ pi.amount }}</b>
+            <span class="ep-note-txt" :title="pi.notes">{{ pi.notes }}</span>
+            <template v-if="auth.canCreate && !aprPlanEdit.id">
+              <button class="ep-btn" title="调整该批次的计划日期/金额/备注" @click="startAprPlanEdit(editId, pi)">编辑</button>
+              <button v-if="editPlanItems.length > 1" class="ep-btn danger" title="撤回该批次（已排款同步扣减）"
+                      @click="removeAprPlanItem(editId, pi).then(refreshEditRec)">撤回</button>
+            </template>
+          </template>
+        </div>
+      </div>
+      <div v-else class="ep-tip">尚未排款——可在下方直接排第一批</div>
+
+      <!-- 追加批次：一笔款排不满时分批往下排 -->
+      <div v-if="auth.canCreate && !editClosed && editUnscheduled > 0" class="ep-add">
+        <input v-model="aprAddPlan.planned_date" type="date" class="ep-inp" />
+        <input v-model="aprAddPlan.amount" type="number" step="0.01" class="ep-inp ep-amt" :placeholder="`金额 ≤ ${editUnscheduled.toFixed(2)}`" />
+        <input v-model="aprAddPlan.notes" type="text" class="ep-inp ep-note" placeholder="备注（选填）" />
+        <button class="ep-btn primary" :disabled="aprAddPlan.busy" @click="addEditPlanItem">
+          {{ aprAddPlan.busy ? '…' : (editPlanItems.length ? '＋ 追加批次' : '＋ 排第一批') }}
+        </button>
+        <button class="ep-btn" title="剩余额度确定不再执行时关闭（如按实际发生额结算、业务取消、并入其他审批）；关闭后不计入未排合计，可撤销" @click="closeForm.show = !closeForm.show">关闭剩余排款…</button>
+      </div>
+
+      <!-- 结案 / 撤销结案 -->
+      <div v-if="closeForm.show && !editClosed" class="ep-close-box">
+        <input v-model="closeForm.reason" class="ep-inp ep-reason" maxlength="200" placeholder="关闭原因（必填，如：按实际发生额结算 / 业务取消 / 并入其他审批）" />
+        <button class="ep-btn primary" :disabled="closeForm.busy" @click="doCloseSchedule">确认关闭 ¥{{ editUnscheduled.toFixed(2) }}</button>
+        <button class="ep-btn" @click="closeForm.show = false">取消</button>
+        <div class="ep-tip">关闭后：记录归档并移出审批列表（可用「只看排款已关闭」调出）、剩余按 0 计（不再进入「未排合计」与关账清单），已排批次与付款不受影响；随时可撤销。</div>
+      </div>
+      <div v-if="editClosed" class="ep-close-box closed">
+        <span class="ep-tip">排款已关闭：{{ editRec?.schedule_closed_reason }}<template v-if="editRec?.schedule_closed_by"> · {{ editRec.schedule_closed_by }}</template></span>
+        <button v-if="auth.canCreate" class="ep-btn" :disabled="closeForm.busy" @click="undoCloseSchedule">撤销关闭</button>
+      </div>
+    </template>
+  </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
     <div class="sched-progress">
@@ -1245,7 +1403,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 批量删除二次确认 -->
   <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">
-    <p class="del-warn">⚠ 删除后不可恢复；已排款（已关联付款管理）的记录将自动跳过。</p>
+    <p class="del-warn">⚠ 删除后移入回收站，可在回收站还原；已排款（已关联付款管理）的记录将另行确认是否连同排款一并删除。</p>
     <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
     <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
@@ -1266,11 +1424,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 .err-banner { background: var(--c-warn-bg); border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--c-warn); display: flex; align-items: center; gap: 8px; }
-.apr-timebar { padding: 2px 0 8px; }
+/* 一行装下：登记时间预设 + 已选筛选 chips + 「排款已关闭」视图开关（右贴） */
+.apr-timebar { padding: 2px 0 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.apr-timebar > :first-child { flex: 0 1 auto; min-width: 0; }
+.apr-timebar .fchip { flex-shrink: 0; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
-.table-wrap.page-scroll { padding-bottom: 40px; }
+.table-wrap.page-scroll { margin-bottom: 40px; }
 /* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
 .tb-left { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
 /* 页头标题/子标签不换行：空间不足时优先压缩右侧工具区（topbar-tools 可换行），标题恒定一行 */
@@ -1345,7 +1506,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .status-cell.st-approved .status-badge { color: var(--c-success); background: var(--c-success-bg); border-color: var(--c-success-bdr); }
 .status-cell.st-rejected .status-badge { color: var(--c-danger); background: var(--c-danger-bg); border-color: var(--c-danger-bdr); }
 .status-cell.st-canceled .status-badge { color: var(--muted); background: rgba(120,120,120,0.12); border-color: rgba(120,120,120,0.3); }
-.g7-cell { color: var(--muted); }
+.g7-cell { color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 /* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
 .approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.048); }
 .approval-table tr.row-sel td,
@@ -1442,6 +1603,43 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
+/* 「排款已关闭」视图开关：贴在登记时间条右端，与日期预设 chip 同高同形 */
+.cv-chip { margin-left: auto; flex-shrink: 0; align-self: center;
+  border: 1px dashed var(--border); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 3px 12px; font-size: 12px; line-height: 18px; cursor: pointer; }
+.cv-chip:hover { border-color: var(--primary); color: var(--primary); }
+.cv-chip.on { border-style: solid; border-color: var(--primary); color: var(--primary);
+  background: rgba(201,99,66,0.07); font-weight: 700; }
+
+/* 编辑弹窗内的排款计划区 */
+.ep-sec { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+.ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.ep-title { font-size: 13px; font-weight: 700; }
+.ep-sum { font-size: 12px; color: var(--muted); }
+.ep-sum b { color: var(--text); }
+.ep-sum b.ok { color: var(--c-success); }
+.ep-sum b.warn { color: var(--c-warn); }
+.ep-sum b.closed { color: var(--muted); text-decoration: line-through; }
+.ep-closed-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: rgba(120,120,120,0.14); color: var(--muted); }
+.ep-list { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; }
+.ep-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.ep-seq { font-weight: 700; color: var(--muted); flex-shrink: 0; }
+.ep-date { color: var(--muted); }
+.ep-money { font-weight: 800; }
+.ep-note-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ep-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.ep-inp { border: 1px solid var(--border); border-radius: 7px; padding: 4px 8px; font-size: 12px; font-family: inherit; }
+.ep-amt { width: 130px; } .ep-note { flex: 1; min-width: 120px; } .ep-reason { flex: 1; min-width: 220px; }
+.ep-btn { border: 1px solid var(--border); background: var(--row-bg); border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ep-btn:hover { border-color: var(--primary); color: var(--primary); }
+.ep-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
+.ep-btn.danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
+.ep-btn:disabled { opacity: .55; cursor: default; }
+.ep-close-box { margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.ep-close-box.closed { background: rgba(120,120,120,0.05); }
+.ep-tip { font-size: 11.5px; color: var(--muted); }
+.ep-close-box .ep-tip { width: 100%; }
+
 .apr-plan-detail { background: #faf8f6; border-top: 1px solid var(--border); padding: 10px 16px 12px; }
 .apd-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .apd-head i { font-style: normal; color: var(--c-info); font-size: 11px; }

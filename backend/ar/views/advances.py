@@ -106,10 +106,38 @@ def advances(request):
         qs = _advance_dept_filter(
             AdvanceRecord.objects.select_related('project', 'created_by'), request)
         qs = _apply_advance_filters(qs, request)
-        # 列头排序仅作用于分页列表（汇总不受影响）；非法/未指定回退模型默认排序
+        # 区间联动（现金口径）：选了收付时间时，行内 预收/预付金额=区间内分期收付合计、
+        # 已核销=区间内核销合计（按核销日期），与 KPI/合计同口径——记录整笔金额不再出现。
+        sd, ed = _advance_date_range(request)
+        _range_on = bool(sd or ed)
+        if _range_on:
+            inst_sq = AdvanceInstallment.objects.filter(advance_record=OuterRef('pk'))
+            wo_sq = AdvanceWriteoff.objects.filter(advance_record=OuterRef('pk'))
+            if sd:
+                inst_sq = inst_sq.filter(occur_date__gte=sd)
+                wo_sq = wo_sq.filter(writeoff_date__gte=sd)
+            if ed:
+                inst_sq = inst_sq.filter(occur_date__lte=ed)
+                wo_sq = wo_sq.filter(writeoff_date__lte=ed)
+            _dec0 = Value(Decimal('0'), output_field=DecimalField(max_digits=15, decimal_places=2))
+            qs = qs.annotate(
+                range_amount=Coalesce(Subquery(
+                    inst_sq.values('advance_record').annotate(s=Sum('amount')).values('s')), _dec0),
+                range_written_off=Coalesce(Subquery(
+                    wo_sq.values('advance_record').annotate(s=Sum('amount')).values('s')), _dec0),
+            )
+        # 列头排序仅作用于分页列表（汇总不受影响）；非法/未指定回退模型默认排序。
+        # 区间联动时金额/核销列显示的是区间值，排序须同口径重映射到注解列，避免「排序按
+        # 整笔、显示按区间」的错位。
         sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'),
                                ADVANCE_FILTER_REGISTRY)
         if sort_by:
+            if _range_on:
+                _remap = {'advance_amount': 'range_amount',
+                          'written_off_amount': 'range_written_off'}
+                _sign = '-' if sort_by.startswith('-') else ''
+                _bare = sort_by.lstrip('-')
+                sort_by = _sign + _remap.get(_bare, _bare)
             qs = qs.order_by(sort_by)
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
@@ -120,6 +148,19 @@ def advances(request):
         total = len(ids)
         base = AdvanceRecord.objects.filter(id__in=ids)
 
+        def _range_sums(d_qs):
+            """区间内 (分期收付合计, 核销合计)。"""
+            inst = AdvanceInstallment.objects.filter(advance_record__in=d_qs)
+            wo = AdvanceWriteoff.objects.filter(advance_record__in=d_qs)
+            if sd:
+                inst = inst.filter(occur_date__gte=sd)
+                wo = wo.filter(writeoff_date__gte=sd)
+            if ed:
+                inst = inst.filter(occur_date__lte=ed)
+                wo = wo.filter(writeoff_date__lte=ed)
+            return (inst.aggregate(s=Sum('amount'))['s'] or 0,
+                    wo.aggregate(s=Sum('amount'))['s'] or 0)
+
         def _dir_summary(direction):
             d_qs = base.filter(direction=direction)
             agg = d_qs.aggregate(
@@ -128,13 +169,16 @@ def advances(request):
                 rf=Sum('refunded_amount'),
                 bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
             )
+            amt, wo_amt = agg['amt'] or 0, agg['wo'] or 0
+            if _range_on:
+                amt, wo_amt = _range_sums(d_qs)   # 合计与行内同口径：区间现金
             overdue = (d_qs.filter(balance_amount__gt=0,
                                    expected_writeoff_date__lt=today)
                        .aggregate(s=Sum('balance_amount'))['s'] or 0)
             return {
                 'count': d_qs.count(),
-                'advance_amount': str(agg['amt'] or 0),
-                'written_off': str(agg['wo'] or 0),
+                'advance_amount': str(amt),
+                'written_off': str(wo_amt),
                 'refunded': str(agg['rf'] or 0),
                 'balance': str(agg['bal'] or 0),
                 'overdue_balance': str(overdue),
@@ -142,6 +186,7 @@ def advances(request):
 
         summary = {
             'count': total,
+            'cash_basis': _range_on,
             '预收': _dir_summary('预收'),
             '预付': _dir_summary('预付'),
         }
@@ -149,10 +194,15 @@ def advances(request):
         perms = get_request_perms(request)
         include_wo = request.GET.get('include_writeoffs', '') in ('1', 'true')
         items = list(qs[(page - 1) * size: page * size])
-        rows = [apply_ar_view_mask(r.to_dict(today=today, include_writeoffs=include_wo),
-                                   perms, 'advance') for r in items]
+        rows = []
+        for r in items:
+            d = r.to_dict(today=today, include_writeoffs=include_wo)
+            if _range_on:
+                d['advance_amount'] = str(r.range_amount)
+                d['written_off_amount'] = str(r.range_written_off)
+            rows.append(apply_ar_view_mask(d, perms, 'advance'))
         return ok({'items': rows, 'total': total, 'page': page, 'size': size,
-                   'summary': summary})
+                   'summary': summary, 'cash_basis': _range_on})
 
     if request.method == 'POST':
         denied = _write_denied(request)
@@ -376,17 +426,23 @@ def advances_kpi(request):
                              rf=Sum('refunded_amount'),
                              bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)))
         total_amt = float(agg['amt'] or 0)
-        # 金额卡=区间内「实际收付」合计（分期口径）；无区间时分期合计=记录全额，
-        # 两者一致。核销率/核销/退款/余额是记录级存量口径，仍按命中记录全额算。
+        # 金额卡=区间内「实际收付」合计（分期口径）、已核销=区间内核销合计（按核销
+        # 日期）——与列表行/筛选合计同口径；无区间时等于记录级存量。核销率/退款/余额
+        # 保持存量口径（进度与挂账是全周期概念）。
         cash_amt = total_amt
+        wo_stock = float(agg['wo'] or 0)   # 核销率恒用存量口径（全周期进度）
+        wo = wo_stock
         if sd or ed:
             inst = AdvanceInstallment.objects.filter(advance_record__in=d_qs)
+            wo_qs = AdvanceWriteoff.objects.filter(advance_record__in=d_qs)
             if sd:
                 inst = inst.filter(occur_date__gte=sd)
+                wo_qs = wo_qs.filter(writeoff_date__gte=sd)
             if ed:
                 inst = inst.filter(occur_date__lte=ed)
+                wo_qs = wo_qs.filter(writeoff_date__lte=ed)
             cash_amt = float(inst.aggregate(s=Sum('amount'))['s'] or 0)
-        wo = float(agg['wo'] or 0)
+            wo = float(wo_qs.aggregate(s=Sum('amount'))['s'] or 0)
         rf = float(agg['rf'] or 0)
         bal = float(agg['bal'] or 0)
         pending = d_qs.filter(balance_amount__gt=0).count()
@@ -398,8 +454,9 @@ def advances_kpi(request):
             'written_off': wo,
             'refunded': rf,
             'balance': bal,
-            # 核销进度按「已核销+已退款」占比:退款也消耗预付余额,只算核销会让进度虚低
-            'writeoff_rate': round((wo + rf) / total_amt * 100, 1) if total_amt else 100.0,
+            # 核销进度按「已核销+已退款」占比:退款也消耗预付余额,只算核销会让进度虚低。
+            # 恒用存量口径（wo_stock）——区间联动只改显示金额，不改全周期进度。
+            'writeoff_rate': round((wo_stock + rf) / total_amt * 100, 1) if total_amt else 100.0,
             'pending_count': pending,
             'overdue_count': overdue_qs.count(),
             'overdue_balance': overdue_amt,
@@ -425,19 +482,27 @@ def advances_summary(request):
     }
     rows = []
     if group_by == 'month':
-        agg = (qs.values('occur_year', 'occur_month')
-               .annotate(count=Count('id'), advance_amount=Sum('advance_amount'),
-                         written_off=Sum('written_off_amount'),
-                         balance=Sum('balance_amount'))
-               .order_by('occur_year', 'occur_month'))
+        # 按月=实际收付口径：金额按「分期收付日期」归月（真实现金事件），不按主表
+        # 入驻年月（occur_year/month 是业务归属维度，不参与金额统计）。
+        # 核销/余额是记录级存量、无法无重复地摊到收付月，故月透视只给 金额+笔数。
+        inst = AdvanceInstallment.objects.filter(advance_record__in=qs)
+        sd, ed = _advance_date_range(request)
+        if sd:
+            inst = inst.filter(occur_date__gte=sd)
+        if ed:
+            inst = inst.filter(occur_date__lte=ed)
+        agg = (inst.annotate(_m=TruncMonth('occur_date')).values('_m')
+               .annotate(advance_amount=Sum('amount'),
+                         count=Count('advance_record_id', distinct=True))
+               .order_by('_m'))
         for r in agg:
+            if not r['_m']:
+                continue
             rows.append({
-                'key': f"{r['occur_year']}-{r['occur_month']:02d}",
-                'year': r['occur_year'], 'month': r['occur_month'],
+                'key': r['_m'].strftime('%Y-%m'),
+                'year': r['_m'].year, 'month': r['_m'].month,
                 'count': r['count'],
                 'advance_amount': str(r['advance_amount'] or 0),
-                'written_off': str(r['written_off'] or 0),
-                'balance': str(r['balance'] or 0),
             })
     else:
         field = field_map.get(group_by, 'delivery_dept')
@@ -455,6 +520,103 @@ def advances_summary(request):
                 'balance': str(r['balance'] or 0),
             })
     return ok({'group_by': group_by, 'rows': rows})
+
+
+@csrf_exempt
+@pk_required()
+def advances_by_counterparty(request):
+    """GET /advances/by-counterparty — 按往来单位（预收=客户 / 预付=供应商）聚合，
+    每个单位下再按项目拆分（未挂项目的散单归入「（未挂项目）」）。
+
+    口径：
+    - 金额（advance_amount）：选了实际收付区间(start_date/end_date)时 = 区间内分期
+      收付合计（真实现金口径，与 KPI 金额卡一致）；未选区间 = 记录全额合计。
+    - 已核销/已退款/未核销余额/逾期余额：记录级存量口径（全周期），不随区间切割。
+    沿用列表同一套筛选（方向/部门/核销状态/搜索/列头筛选），部门权限隔离一致。
+    """
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    today = timezone.localdate()
+    qs = _apply_advance_filters(
+        _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
+    sd, ed = _advance_date_range(request)
+
+    def _stock(vals_qs, keys):
+        return (vals_qs.values(*keys)
+                .annotate(count=Count('id'),
+                          advance_amount=Sum('advance_amount'),
+                          written_off=Sum('written_off_amount'),
+                          refunded=Sum('refunded_amount'),
+                          balance=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
+                          overdue_balance=Sum('balance_amount', filter=Q(
+                              balance_amount__gt=0, expected_writeoff_date__lt=today))))
+
+    def _range_map(model, date_field, keys):
+        """区间内合计 → {key元组: Decimal}；未选区间返回 None（用存量/全额）。
+        model=AdvanceInstallment(分期收付) 或 AdvanceWriteoff(核销，按核销日期)。"""
+        if not (sd or ed):
+            return None
+        sub = model.objects.filter(advance_record__in=qs)
+        if sd:
+            sub = sub.filter(**{f'{date_field}__gte': sd})
+        if ed:
+            sub = sub.filter(**{f'{date_field}__lte': ed})
+        prefixed = [f'advance_record__{k}' for k in keys]
+        return {tuple(r[p] for p in prefixed): r['s']
+                for r in sub.values(*prefixed).annotate(s=Sum('amount'))}
+
+    def _cash_map(keys):
+        return _range_map(AdvanceInstallment, 'occur_date', keys)
+
+    def _wo_map(keys):
+        return _range_map(AdvanceWriteoff, 'writeoff_date', keys)
+
+    def _row(r, cash, wo, key, extra=None):
+        amt = r['advance_amount'] or 0
+        wo_amt = r['written_off'] or 0
+        if cash is not None:
+            amt = cash.get(key) or 0
+        if wo is not None:
+            wo_amt = wo.get(key) or 0
+        out = {
+            'count': r['count'],
+            'advance_amount': str(amt),
+            'written_off': str(wo_amt),
+            'refunded': str(r['refunded'] or 0),
+            'balance': str(r['balance'] or 0),
+            'overdue_balance': str(r['overdue_balance'] or 0),
+        }
+        if extra:
+            out.update(extra)
+        return out
+
+    # 单位级
+    cp_cash = _cash_map(['counterparty'])
+    cp_wo = _wo_map(['counterparty'])
+    cp_rows = {}
+    for r in _stock(qs, ['counterparty']):
+        cp = r['counterparty'] or '（未填单位）'
+        cp_rows[cp] = _row(r, cp_cash, cp_wo, (r['counterparty'],),
+                           {'counterparty': cp, 'projects': [], 'project_count': 0})
+    # 项目级（挂在单位下；散单=（未挂项目））
+    pj_cash = _cash_map(['counterparty', 'project_id'])
+    pj_wo = _wo_map(['counterparty', 'project_id'])
+    for r in (_stock(qs, ['counterparty', 'project_id', 'project__short_name'])):
+        cp = r['counterparty'] or '（未填单位）'
+        parent = cp_rows.get(cp)
+        if parent is None:
+            continue
+        parent['projects'].append(_row(
+            r, pj_cash, pj_wo, (r['counterparty'], r['project_id']),
+            {'project_id': r['project_id'],
+             'short_name': r['project__short_name'] or '（未挂项目）'}))
+    for row in cp_rows.values():
+        row['projects'].sort(key=lambda x: -float(x['balance'] or 0))
+        row['project_count'] = sum(1 for p in row['projects'] if p['project_id'])
+    rows = sorted(cp_rows.values(),
+                  key=lambda x: (-float(x['balance'] or 0), -float(x['advance_amount'] or 0)))
+    return ok({'rows': rows, 'cash_basis': bool(sd or ed)})
 
 
 @csrf_exempt
@@ -947,8 +1109,8 @@ def advance_export(request):
         ('p_short_name', '项目简称', lambda rec, st: rec.project.short_name if rec.project_id else ''),
         (None, '交付部门', lambda rec, st: rec.delivery_dept),
         ('adv_counterparty', '往来单位', lambda rec, st: rec.counterparty),
-        (None, '发生年', lambda rec, st: rec.occur_year),
-        (None, '发生月', lambda rec, st: rec.occur_month),
+        (None, '入驻年', lambda rec, st: rec.occur_year),
+        (None, '入驻月', lambda rec, st: rec.occur_month),
         (None, '款项日期', lambda rec, st: str(rec.occur_date) if rec.occur_date else ''),
         ('adv_amount', '预收/预付金额', lambda rec, st: float(rec.advance_amount)),
         ('adv_amount', '收付明细',
@@ -1826,6 +1988,542 @@ def advance_writeoff_detail(request, pk, wid):
     return err('Method not allowed', 405)
 
 
+
+
+
+
+# ── 转移（往来单位间/项目间权益转移，非现金事件）──────────────────────────────
+
+def _transfer_gate(request, rec):
+    """转移通用闸：页面 + 部门 + 金额字段权限。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    return _ar_field_denied(request, 'adv_amount')
+
+
+def _transfers_payload(rec_id):
+    rec = AdvanceRecord.objects.select_related('project').get(pk=rec_id)
+    sel = ('from_advance', 'from_advance__project', 'to_advance', 'to_advance__project', 'created_by')
+    return {
+        'transfers_in': [t.to_dict() for t in rec.transfers_in.select_related(*sel)],
+        'transfers_out': [t.to_dict() for t in rec.transfers_out.select_related(*sel)],
+        'advance_amount': str(rec.advance_amount),
+        'transferred_in_amount': str(rec.transferred_in_amount),
+        'transferred_out_amount': str(rec.transferred_out_amount),
+        'written_off_amount': str(rec.written_off_amount),
+        'balance_amount': str(rec.balance_amount),
+        'writeoff_status': rec.writeoff_status,
+        'aging_base_date': str(rec.aging_base_date) if rec.aging_base_date else None,
+    }
+
+
+@csrf_exempt
+@pk_required()
+def advance_transfers(request, pk):
+    """GET/POST /advances/<pk>/transfers — 预收/预付转移。
+
+    转移是权益重分类、非现金事件：不产生收付明细，现金流/区间收付统计不变；
+    仅余额口径（recompute_derived）纳入转入/转出。目标侧账龄承袭源记录有效
+    账龄起点。跨事业部转移仅超级管理员。"""
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _transfer_gate(request, rec)
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok(_transfers_payload(rec.pk))
+
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    amount = _dec(data.get('amount', 0))
+    if amount <= 0:
+        return err('转移金额必须大于0')
+    tdate = _normalize_date(data.get('transfer_date'))
+    if not tdate:
+        return err('转移日期无效（格式 2026-01-20）')
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return err('请填写转移原因（如：合同主体变更/项目落位），以便日后追溯')
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            if amount > (src.balance_amount or Decimal('0')):
+                return err(f'转移金额 {amount:,.2f} 超过源记录未核销余额 '
+                           f'{(src.balance_amount or Decimal("0")):,.2f}')
+            to_id = data.get('to_advance_id')
+            new_target = None
+            if to_id:
+                try:
+                    target = AdvanceRecord.objects.select_for_update().get(pk=int(to_id))
+                except (AdvanceRecord.DoesNotExist, ValueError, TypeError):
+                    return err('目标记录不存在')
+                if target.pk == src.pk:
+                    return err('不能转移给记录自身')
+                if target.direction != src.direction:
+                    return err(f'方向不一致：{src.direction} 只能转移到同方向记录')
+                target_dept = target.delivery_dept
+            else:
+                nt = data.get('new_target') or {}
+                cp = (nt.get('counterparty') or '').strip()
+                if not cp:
+                    return err('新建目标需填写往来单位')
+                project = None
+                if nt.get('project_id'):
+                    try:
+                        project = ARProject.objects.filter(pk=int(nt['project_id'])).first()
+                    except (TypeError, ValueError):
+                        return err('目标项目无效')
+                    if not project:
+                        return err('目标项目不存在')
+                target_dept = (project.delivery_dept if project
+                               else ((nt.get('delivery_dept') or '').strip() or src.delivery_dept))
+                new_target = (cp, project)
+            if target_dept != src.delivery_dept and request.pk_role != 'super_admin':
+                return err('跨事业部转移仅超级管理员可操作', 403, 403)
+            # 校验全部通过后才落库（return 不回滚事务，写入必须在所有校验之后）
+            if new_target is not None:
+                cp, project = new_target
+                target = AdvanceRecord(
+                    direction=src.direction, counterparty=cp, project=project,
+                    delivery_dept=target_dept,
+                    occur_year=src.occur_year, occur_month=src.occur_month,
+                    occur_date=None, advance_amount=Decimal('0'),
+                    expected_writeoff_date=src.expected_writeoff_date,
+                    notes=f'由转移新建（源：{src.counterparty}）', created_by=user)
+                target.save()
+            AdvanceTransfer.objects.create(
+                from_advance=src, to_advance=target, amount=amount,
+                transfer_date=tdate, reason=reason[:200], created_by=user)
+            src.recompute_derived()
+            target.recompute_derived()
+            target.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({**_transfers_payload(pk), 'target_id': target.pk})
+
+
+@csrf_exempt
+@pk_required()
+def advance_transfer_detail(request, pk, tid):
+    """DELETE /advances/<pk>/transfers/<tid> — 撤销转移（源/目标任一侧可发起）。
+
+    守卫：撤销后目标余额不得为负（目标已核销/再转出转入款项时拒绝，提示先处理）。
+    跨事业部单据仅超级管理员可撤销（与创建同权）。"""
+    try:
+        t = AdvanceTransfer.objects.select_related('from_advance', 'to_advance').get(pk=tid)
+    except AdvanceTransfer.DoesNotExist:
+        return err('转移记录不存在', 404)
+    if pk not in (t.from_advance_id, t.to_advance_id):
+        return err('转移记录不存在', 404)
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    gate_rec = t.from_advance if pk == t.from_advance_id else t.to_advance
+    denied = _transfer_gate(request, gate_rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    if (t.from_advance.delivery_dept != t.to_advance.delivery_dept
+            and request.pk_role != 'super_admin'):
+        return err('跨事业部转移仅超级管理员可撤销', 403, 403)
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=t.from_advance_id)
+            tgt = AdvanceRecord.objects.select_for_update().get(pk=t.to_advance_id)
+            if t.kind == 'cash_lines':
+                d = t.detail or {}
+                inst_ids = [x['id'] for x in d.get('installments', [])]
+                wo_ids = [x['id'] for x in d.get('writeoffs', [])]
+                insts = list(AdvanceInstallment.objects.select_for_update()
+                             .filter(id__in=inst_ids, advance_record_id=tgt.pk))
+                wos = list(AdvanceWriteoff.objects.select_for_update()
+                           .filter(id__in=wo_ids, advance_record_id=tgt.pk))
+                if len(insts) != len(inst_ids) or len(wos) != len(wo_ids):
+                    return err('迁移的收付/核销行已在目标侧被修改或删除，无法撤销。请手工反向迁移更正')
+                sp = d.get('wo_split')
+                sp_moved = None
+                if sp:
+                    sp_moved = (AdvanceWriteoff.objects.select_for_update()
+                                .filter(pk=sp['moved_id'], advance_record_id=tgt.pk).first())
+                    if not sp_moved or str(sp_moved.amount) != sp['amount']:
+                        return err('拆分随迁的核销已在目标侧被修改或删除，无法撤销。请手工反向迁移更正')
+                inst_amt = sum((i.amount or Decimal('0')) for i in insts)
+                wo_amt = (sum((w.amount or Decimal('0')) for w in wos)
+                          + (Decimal(sp['amount']) if sp else Decimal('0')))
+                # 撤销后目标余额 = 现余额 − 迁入收付 + 随迁核销
+                if ((tgt.balance_amount or Decimal('0')) - inst_amt + wo_amt) < Decimal('0'):
+                    return err('撤销后目标记录余额将为负（目标已使用迁入款项）。请先处理目标侧的核销或转移')
+                orig_no = {x['id']: x.get('orig_no') for x in d.get('installments', [])}
+                orig_wo_no = {x['id']: x.get('orig_no') for x in d.get('writeoffs', [])}
+                note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+                used = set(src.installments.values_list('install_no', flat=True))
+                nxt = (max(used) if used else 0)
+                # 正额先行搬回：避免负额行先落导致源侧信号中间态误拒
+                for i in sorted(insts, key=lambda x: (-(x.amount or Decimal('0')), x.install_no)):
+                    want = orig_no.get(i.id)
+                    if want and want not in used:
+                        i.install_no = want
+                    else:
+                        nxt += 1
+                        i.install_no = nxt
+                    used.add(i.install_no)
+                    i.advance_record = src
+                    i.notes = (i.notes or '').replace(note_tag, '').strip()
+                    i.save()
+                used_w = set(src.writeoffs.values_list('writeoff_no', flat=True))
+                nxt_w = (max(used_w) if used_w else 0)
+                for w in wos:
+                    want = orig_wo_no.get(w.id)
+                    if want and want not in used_w:
+                        w.writeoff_no = want
+                    else:
+                        nxt_w += 1
+                        w.writeoff_no = nxt_w
+                    used_w.add(w.writeoff_no)
+                    w.advance_record = src
+                    w.notes = (w.notes or '').replace(note_tag, '').strip()
+                    w.save()
+                if sp_moved is not None:
+                    # 拆分复原：目标侧拆出行删除，金额拼回源核销行（源行已删则重建）。
+                    # 重建取号必须感知 used_w（含按 orig_no 恢复的行），否则撞唯一键
+                    portion = Decimal(sp['amount'])
+                    src_row = (AdvanceWriteoff.objects.select_for_update()
+                               .filter(pk=sp['src_id'], advance_record_id=src.pk).first())
+                    sp_moved.delete()
+                    if src_row is not None:
+                        src_row.amount = (src_row.amount or Decimal('0')) + portion
+                        src_row.save()
+                    else:
+                        rebuild_no = (max(used_w) if used_w else 0) + 1
+                        used_w.add(rebuild_no)
+                        AdvanceWriteoff.objects.create(
+                            advance_record=src, writeoff_no=rebuild_no, amount=portion,
+                            writeoff_date=_normalize_date(sp.get('writeoff_date'))
+                            or timezone.localdate())
+                t.delete()
+                for r_ in (src, tgt):
+                    r_.refresh_from_db()
+                    r_.advance_amount = (r_.installments.aggregate(s=Sum('amount'))['s']
+                                         or Decimal('0'))
+                    AdvanceRecord.objects.filter(pk=r_.pk).update(advance_amount=r_.advance_amount)
+                    r_.recompute_derived()
+                tgt.recompute_aging_base()
+            else:
+                if (tgt.balance_amount or Decimal('0')) < (t.amount or Decimal('0')):
+                    return err(f'撤销后目标记录余额将为负（目标已使用转入款项 '
+                               f'{(t.amount or Decimal("0")):,.2f}）。请先处理目标侧的核销或转移，再撤销本单')
+                t.delete()
+                src.recompute_derived()
+                tgt.recompute_derived()
+                tgt.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok(_transfers_payload(pk))
+
+
+@csrf_exempt
+@pk_required()
+def advance_writeoff_migrate(request, pk, wid):
+    """POST /advances/<pk>/writeoffs/<wid>/migrate {to_advance_id} — 核销记录迁移。
+
+    核销挂错记录的更正通道：仅限「纯登记核销」（未关联预收抵扣回款/排款）；
+    关联型核销须先撤销关联再按正常流程处理。目标余额须足以承接该笔核销。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        wo = AdvanceWriteoff.objects.select_related('advance_record').get(
+            pk=wid, advance_record_id=pk)
+    except AdvanceWriteoff.DoesNotExist:
+        return err('核销记录不存在', 404)
+    src_rec = wo.advance_record
+    denied = _transfer_gate(request, src_rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    if wo.ar_record_id or wo.ar_payment_id or wo.payment_id:
+        return err('该核销已关联预收抵扣回款/排款，不能直接迁移：'
+                   '请先删除该核销解除关联，将余额转移到目标记录后重新核销')
+    data = _parse_body(request)
+    try:
+        to_id = int(data.get('to_advance_id'))
+    except (TypeError, ValueError):
+        return err('目标记录无效')
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            # 锁内复检：并发的按笔迁移可能已把该核销整移/拆小——重取新鲜行，
+            # 陈旧对象直接 save 会把核销抢回或金额写回，造成双计
+            wo = (AdvanceWriteoff.objects.select_for_update()
+                  .filter(pk=wid, advance_record_id=src.pk).first())
+            if wo is None:
+                return err('该核销已被并发操作移动或删除，请刷新后重试')
+            if wo.ar_record_id or wo.ar_payment_id or wo.payment_id:
+                return err('该核销已关联预收抵扣回款/排款，不能直接迁移：'
+                           '请先删除该核销解除关联，将余额转移到目标记录后重新核销')
+            try:
+                tgt = AdvanceRecord.objects.select_for_update().get(pk=to_id)
+            except AdvanceRecord.DoesNotExist:
+                return err('目标记录不存在')
+            if tgt.pk == src.pk:
+                return err('目标不能是当前记录')
+            if tgt.direction != src.direction:
+                return err(f'方向不一致：{src.direction} 核销只能迁移到同方向记录')
+            if (tgt.delivery_dept != src.delivery_dept
+                    and request.pk_role != 'super_admin'):
+                return err('跨事业部迁移仅超级管理员可操作', 403, 403)
+            if (tgt.balance_amount or Decimal('0')) < (wo.amount or Decimal('0')):
+                return err(f'目标记录未核销余额 {(tgt.balance_amount or Decimal("0")):,.2f} '
+                           f'不足以承接该笔核销 {(wo.amount or Decimal("0")):,.2f}')
+            next_no = (tgt.writeoffs.aggregate(m=Max("writeoff_no"))["m"] or 0) + 1
+            note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+            wo.advance_record = tgt
+            wo.writeoff_no = next_no
+            if note_tag not in (wo.notes or ''):
+                wo.notes = ((wo.notes or '') + note_tag).strip()
+            wo.save()
+            src.recompute_derived()
+            tgt.recompute_derived()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({'moved': True, 'from': _transfers_payload(pk), 'to': _transfers_payload(to_id)})
+
+@csrf_exempt
+@pk_required()
+def advance_installments_migrate(request, pk):
+    """POST /advances/<pk>/installments/migrate — 按笔迁移收付明细（可连带核销）。
+
+    body: {installment_ids: [..], writeoff_ids: [..]?, reason,
+           transfer_date?, to_advance_id | new_target{counterparty, project_id?}}
+
+    与「权益划转」互补的第二种转移语义：这笔收付当初就记错了对象 → 把选中的
+    收付行（及可选的纯登记核销行）整笔物理迁移到目标记录，收付日期/金额随行，
+    现金口径同步更正。守卫：双侧余额均不得为负（源侧核销覆盖被迁收付时须
+    连带迁核销或先撤核销）；关联型核销不可随迁；跨事业部仅超管；整个操作
+    原子且可整单撤销（DELETE 对应转移单）。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _transfer_gate(request, rec)
+    if denied:
+        return denied
+    denied = _action_denied(request, 'adv_transfer')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    inst_ids = data.get('installment_ids') or []
+    if not isinstance(inst_ids, list) or not inst_ids:
+        return err('请选择要迁移的收付明细')
+    wo_ids = data.get('writeoff_ids') or []
+    if not isinstance(wo_ids, list):
+        return err('核销参数无效')
+    try:
+        inst_ids = [int(x) for x in inst_ids]
+        wo_ids = [int(x) for x in wo_ids]
+    except (TypeError, ValueError):
+        return err('明细参数无效')
+    # 核销随迁模式：auto=自动同步（默认，FIFO 取纯登记核销 min(迁移额, 已核销)，
+    # 边界行自动拆分——已核销覆盖的部分整体平移，源未核销余额尽量不变）；
+    # none=仅迁收付；manual=显式 writeoff_ids（兼容旧调用）
+    carry_mode = (data.get('carry_mode') or ('manual' if wo_ids else 'auto')).strip()
+    if carry_mode not in ('auto', 'none', 'manual'):
+        return err('核销随迁模式无效')
+    if carry_mode != 'manual' and wo_ids:
+        return err('carry_mode 为 auto/none 时不能同时指定 writeoff_ids（二者语义冲突）')
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return err('请填写迁移原因（如：收付登记错对象），以便日后追溯')
+    tdate = _normalize_date(data.get('transfer_date')) or timezone.localdate()
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    try:
+        with transaction.atomic():
+            src = AdvanceRecord.objects.select_for_update().get(pk=pk)
+            insts = list(AdvanceInstallment.objects.select_for_update()
+                         .filter(id__in=inst_ids, advance_record_id=src.pk))
+            if len(insts) != len(set(inst_ids)):
+                return err('部分收付明细不存在或不属于本记录')
+            inst_amt = sum((i.amount or Decimal('0')) for i in insts)
+            # 转移单金额约束 amount>0：净额非正的选择（仅退回行/正负抵零）不可单独迁，
+            # 退回行须与其对应的正额收付一起选中迁移
+            if inst_amt <= Decimal('0'):
+                return err(f'所选收付净额为 {inst_amt:,.2f}，必须大于0：'
+                           '退回（负额）行请与对应的正额收付行一起勾选迁移')
+            split_plan = None   # (源核销行, 拆出金额)
+            if carry_mode == 'manual':
+                wos = list(AdvanceWriteoff.objects.select_for_update()
+                           .filter(id__in=wo_ids, advance_record_id=src.pk))
+                if len(wos) != len(set(wo_ids)):
+                    return err('部分核销记录不存在或不属于本记录')
+                for w in wos:
+                    if w.ar_record_id or w.ar_payment_id or w.payment_id:
+                        return err(f'第{w.writeoff_no}笔核销已关联预收抵扣回款/排款，不可随迁：'
+                                   '请先删除该核销解除关联后重试')
+                wo_amt = sum((w.amount or Decimal('0')) for w in wos)
+            elif carry_mode == 'none':
+                wos = []
+                wo_amt = Decimal('0')
+            else:   # auto
+                carry_target = min(inst_amt, src.written_off_amount or Decimal('0'))
+                pure = list(AdvanceWriteoff.objects.select_for_update()
+                            .filter(advance_record_id=src.pk, ar_record__isnull=True,
+                                    ar_payment__isnull=True, payment__isnull=True)
+                            .order_by('writeoff_date', 'writeoff_no', 'id'))
+                remaining = carry_target
+                wos = []
+                for w in pure:
+                    if remaining <= Decimal('0'):
+                        break
+                    amt = w.amount or Decimal('0')
+                    if amt <= remaining:
+                        wos.append(w)
+                        remaining -= amt
+                    else:
+                        split_plan = (w, remaining)
+                        remaining = Decimal('0')
+                wo_amt = carry_target - remaining   # 纯核销池不足时只随迁可迁部分
+            # 源侧：移走收付、随迁核销后余额不得为负
+            src_after = (src.balance_amount or Decimal('0')) - inst_amt + wo_amt
+            if src_after < Decimal('0'):
+                need = -src_after
+                # 精确定位缺口成因：退款冲抵 / 关联型核销（预收抵扣、排款）/ 需连带纯核销
+                refund_amt = src.refunded_amount or Decimal('0')
+                linked_wo = ((src.written_off_amount or Decimal('0'))
+                             - sum((w.amount or Decimal('0')) for w in wos)
+                             - (split_plan[1] if split_plan else Decimal('0')))
+                causes = []
+                if refund_amt > 0:
+                    causes.append(f'已退款 {refund_amt:,.2f}（退款为供应商退回的现金，'
+                                  '不随迁移转移；如供应商确已变更，请先在日常收款解除该退款关联）')
+                if linked_wo > 0:
+                    causes.append(f'已关联预收抵扣回款/排款的核销 {linked_wo:,.2f}'
+                                  '（请先撤销对应关联核销）')
+                if carry_mode != 'auto' and not causes:
+                    causes.append(f'被迁收付已被核销覆盖，请连带迁移约 {need:,.2f} 的纯登记核销，'
+                                  '或改用自动同步模式')
+                tail = '；'.join(causes) if causes else '被迁收付已被其它记录占用'
+                return err(f'迁移后源记录余额将为负 {src_after:,.2f}，无法迁移：该笔收付有 '
+                           f'{need:,.2f} 由以下方式冲抵、不能随迁——{tail}')
+            # 目标：已有 or 新建（校验先行，写入殿后——return 不回滚事务）
+            to_id = data.get('to_advance_id')
+            new_target = None
+            if to_id:
+                try:
+                    target = AdvanceRecord.objects.select_for_update().get(pk=int(to_id))
+                except (AdvanceRecord.DoesNotExist, ValueError, TypeError):
+                    return err('目标记录不存在')
+                if target.pk == src.pk:
+                    return err('不能迁移到记录自身')
+                if target.direction != src.direction:
+                    return err(f'方向不一致：{src.direction} 只能迁移到同方向记录')
+                target_dept = target.delivery_dept
+            else:
+                nt = data.get('new_target') or {}
+                cp = (nt.get('counterparty') or '').strip()
+                if not cp:
+                    return err('新建目标需填写往来单位')
+                project = None
+                if nt.get('project_id'):
+                    try:
+                        project = ARProject.objects.filter(pk=int(nt['project_id'])).first()
+                    except (TypeError, ValueError):
+                        return err('目标项目无效')
+                    if not project:
+                        return err('目标项目不存在')
+                target_dept = (project.delivery_dept if project
+                               else ((nt.get('delivery_dept') or '').strip() or src.delivery_dept))
+                new_target = (cp, project)
+            if target_dept != src.delivery_dept and request.pk_role != 'super_admin':
+                return err('跨事业部迁移仅超级管理员可操作', 403, 403)
+            # 目标侧余额守卫先行（新建目标初始余额为0）：err 返回不回滚事务，
+            # 一切校验必须发生在任何写入之前，否则会留下孤儿目标记录
+            _tgt_bal_before = (Decimal('0') if new_target is not None
+                               else (target.balance_amount or Decimal('0')))
+            tgt_after = _tgt_bal_before + inst_amt - wo_amt
+            if tgt_after < Decimal('0'):
+                return err(f'迁移后目标记录余额将为负 {tgt_after:,.2f}：随迁核销超过迁入收付与目标余额之和')
+            if new_target is not None:
+                cp, project = new_target
+                target = AdvanceRecord(
+                    direction=src.direction, counterparty=cp, project=project,
+                    delivery_dept=target_dept,
+                    occur_year=src.occur_year, occur_month=src.occur_month,
+                    occur_date=None, advance_amount=Decimal('0'),
+                    expected_writeoff_date=src.expected_writeoff_date,
+                    notes=f'由迁移新建（源：{src.counterparty}）', created_by=user)
+                target.save()
+            # ── 落库：移动行 + 记转移单（cash_lines）──
+            note_tag = f'（自 {src.counterparty or "无往来单位"} 迁入）'
+            detail = {'installments': [], 'writeoffs': [],
+                      'carry_mode': carry_mode,
+                      'wo_amount': str(wo_amt),
+                      # 账龄承袭基准只看正额收付（退回行不该把账龄钉早）
+                      'earliest_date': str(min(i.occur_date for i in insts
+                                               if (i.amount or Decimal('0')) > 0))}
+            used = set(target.installments.values_list('install_no', flat=True))
+            nxt = (max(used) if used else 0)
+            # 正额先行：混合正负时先抬高目标余额再落负额行，避免信号中间态误拒
+            for i in sorted(insts, key=lambda x: (-(x.amount or Decimal('0')), x.install_no)):
+                detail['installments'].append({'id': i.id, 'orig_no': i.install_no})
+                nxt += 1
+                i.install_no = nxt
+                i.advance_record = target
+                if note_tag not in (i.notes or ''):
+                    i.notes = ((i.notes or '') + note_tag).strip()
+                i.save()
+            used_w = set(target.writeoffs.values_list('writeoff_no', flat=True))
+            nxt_w = (max(used_w) if used_w else 0)
+            for w in sorted(wos, key=lambda x: x.writeoff_no):
+                detail['writeoffs'].append({'id': w.id, 'orig_no': w.writeoff_no})
+                nxt_w += 1
+                w.writeoff_no = nxt_w
+                w.advance_record = target
+                if note_tag not in (w.notes or ''):
+                    w.notes = ((w.notes or '') + note_tag).strip()
+                w.save()
+            if split_plan is not None:
+                sw, portion = split_plan
+                sw.amount = (sw.amount or Decimal('0')) - portion
+                sw.save()
+                nxt_w += 1
+                moved = AdvanceWriteoff.objects.create(
+                    advance_record=target, writeoff_no=nxt_w, amount=portion,
+                    writeoff_date=sw.writeoff_date,
+                    notes=(((sw.notes or '') + note_tag).strip()))
+                detail['wo_split'] = {'src_id': sw.id, 'moved_id': moved.id,
+                                      'amount': str(portion),
+                                      'writeoff_date': str(sw.writeoff_date)}
+            AdvanceTransfer.objects.create(
+                from_advance=src, to_advance=target, kind='cash_lines',
+                amount=inst_amt, transfer_date=tdate, reason=reason[:200],
+                detail=detail, created_by=user)
+            for r_ in (src, target):
+                r_.refresh_from_db()
+                r_.advance_amount = (r_.installments.aggregate(s=Sum('amount'))['s']
+                                     or Decimal('0'))
+                AdvanceRecord.objects.filter(pk=r_.pk).update(advance_amount=r_.advance_amount)
+                r_.recompute_derived()
+            target.recompute_aging_base()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({**_transfers_payload(pk), 'target_id': target.pk})
 
 
 # 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。

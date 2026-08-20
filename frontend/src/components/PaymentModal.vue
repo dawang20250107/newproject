@@ -172,11 +172,19 @@ const approvalNoInvalid = computed(() => {
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
 
 // Installment helpers
+const instListEl = ref(null)
 function addInstallment() {
   const nextSeq = installments.value.length > 0
     ? Math.max(...installments.value.map(i => i.seq)) + 1
     : 1
   installments.value.push({ seq: nextSeq, pay_date: '', pay_amount: '', notes: '' })
+  // 列表内滚后新行在底部：滚过去并聚焦日期框
+  nextTick(() => {
+    const el = instListEl.value
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    el.querySelector('.inst-row:last-of-type input[type=date]')?.focus()
+  })
 }
 // 补齐快填：本期金额 = 付款目标 − 其余各期合计（点 chip 或在金额框按 =）
 function fillInstRemaining(idx) {
@@ -501,7 +509,7 @@ useModalEnter(() => true, submit)
         <span class="inst-count" v-if="installments.length > 0">（已录入 {{ installments.length }} 次）</span>
       </div>
 
-      <div v-if="vis('installments')" class="inst-list">
+      <div v-if="vis('installments')" ref="instListEl" class="inst-list">
         <div v-for="(inst, idx) in installments" :key="idx" class="inst-row">
           <span class="inst-seq">第{{ idx + 1 }}次</span>
           <div class="form-group inst-date-grp">
@@ -526,10 +534,9 @@ useModalEnter(() => true, submit)
         </div>
 
         <div v-if="installments.length === 0" class="inst-empty">暂无付款记录</div>
-
-        <button v-if="editable('installments')" class="btn btn-ghost btn-sm inst-add-btn"
-                @click="addInstallment">+ 添加付款</button>
       </div>
+      <button v-if="vis('installments') && editable('installments')" class="btn btn-ghost btn-sm inst-add-btn"
+              @click="addInstallment">+ 添加付款</button>
 
       <!-- Real-time paid-so-far summary -->
       <div v-if="vis('installments') && vis('total_amount') && plannedTotal > 0"
@@ -544,7 +551,7 @@ useModalEnter(() => true, submit)
       <div v-if="payment?.prepaid_offset_amount && parseFloat(payment.prepaid_offset_amount) > 0"
            class="prepaid-offset-tip">
         <span class="offset-icon">⚖️</span>
-        已关联预付核销 <strong>¥{{ parseFloat(payment.prepaid_offset_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</strong>，现金流已扣除此金额防双重计
+        已关联预付核销 <strong>¥{{ parseFloat(payment.prepaid_offset_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</strong>，现金流已扣减该金额，避免重复计入
       </div>
 
       <div class="modal-footer">
@@ -598,7 +605,8 @@ useModalEnter(() => true, submit)
 
 /* Installment section */
 .inst-count { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 4px; }
-.inst-list { margin-bottom: 10px; }
+.inst-list { margin-bottom: 6px; max-height: 250px; overflow-y: auto; padding-right: 2px; }
+.inst-add-btn { margin-bottom: 10px; }
 .inst-row {
   display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap;
   padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;

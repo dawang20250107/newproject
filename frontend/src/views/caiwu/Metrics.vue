@@ -488,7 +488,7 @@ onMounted(load)
         </template>
 
         <div v-if="canEdit" class="auto-fill-row">
-          <span class="grid-hint">提示：先填写12个月，再按「自动填充年度目标」</span>
+          <span class="grid-hint">提示：先填完 12 个月数据，再点击各事业部的「自动填年度」按钮生成年度目标</span>
           <div class="auto-fill-btns">
             <button v-for="bu in editBus" :key="bu" class="btn btn-ghost btn-sm" @click="autoFillAnnual(bu)">
               {{ bu }} 自动填年度
@@ -570,7 +570,7 @@ onMounted(load)
             </div>
             <BaseChart v-if="gapChartOption" :option="gapChartOption" height="300px" />
             <div v-else class="gap-empty">所选指标暂无已设目标的事业部</div>
-            <div v-if="gapNoTarget" class="gap-note">另有 {{ gapNoTarget }} 个事业部未设该指标目标，未入图（可在上方「目标设定」补录）</div>
+            <div v-if="gapNoTarget" class="gap-note">另有 {{ gapNoTarget }} 个事业部未设该指标目标，未纳入图表（可在上方「目标录入」中补充）</div>
           </div>
         </div>
       </template>

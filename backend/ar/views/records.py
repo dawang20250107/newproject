@@ -357,11 +357,17 @@ def ar_records(request):
             adj_map = defaultdict(list)
             for a in adj_qs:
                 adj_map[a.ar_record_id].append(a.to_dict())
+            # Prefetch invoice entries（编辑态开票明细管理器需要回显已有多次开票）
+            inv_qs = ARInvoiceEntry.objects.filter(ar_record_id__in=record_ids).order_by('entry_no')
+            inv_map = defaultdict(list)
+            for e in inv_qs:
+                inv_map[e.ar_record_id].append(e.to_dict())
             rows = []
             for r in items:
                 d = r.to_dict(today=today)
                 d['payments'] = pay_map.get(r.id, [])
                 d['adjustments'] = adj_map.get(r.id, [])
+                d['invoice_entries'] = inv_map.get(r.id, [])
                 rows.append(apply_ar_view_mask(d, perms, 'record'))
         else:
             rows = [apply_ar_view_mask(r.to_dict(today=today), perms, 'record') for r in items]
@@ -420,6 +426,13 @@ def ar_records(request):
             if rec.actual_invoice_amount is not None and not rec.invoice_date:
                 return err('已填实际开票金额，请同时填写开票日期')
             rec.save()
+            # 开票走明细（多次开票的正源）：创建时带开票 → 生成首条开票明细；
+            # 挂批次的记录由批次开票事件管理，不建明细
+            if rec.actual_invoice_amount is not None and not (data.get('invoice_batch_no') or '').strip():
+                ARInvoiceEntry.objects.create(
+                    ar_record=rec, entry_no=1, amount=rec.actual_invoice_amount,
+                    tax_amount=rec.tax_amount, invoice_date=rec.invoice_date,
+                    created_by=user)
             # 差额调整走明细：创建时带差额 → 生成一条调整明细（原因可一并提交），
             # account_diff_adjustment 由信号派生为明细合计
             init_diff = _dec(data.get('account_diff_adjustment', 0))
@@ -487,8 +500,18 @@ def ar_record_detail(request, pk):
         for field in ('estimated_amount',):
             if field in data:
                 setattr(rec, field, _dec(data[field]))
+        # 开票三字段：有开票明细的记录以明细为正源——PUT 里携带的未变值放行（编辑
+        # 弹窗总会回传原值），试图直改则明确指引走开票明细，避免两处真相打架。
+        _inv_entries_exist = rec.invoice_entries.exists()
+
+        def _inv_direct_blocked(key, new_val, cur_val):
+            return _inv_entries_exist and new_val != cur_val
+
         if 'actual_invoice_amount' in data:
-            rec.actual_invoice_amount = _dec(data['actual_invoice_amount']) if data['actual_invoice_amount'] not in (None, '') else None
+            _new_inv = _dec(data['actual_invoice_amount']) if data['actual_invoice_amount'] not in (None, '') else None
+            if _inv_direct_blocked('actual_invoice_amount', _new_inv, rec.actual_invoice_amount):
+                return err('该记录开票以「开票明细」为正源（支持多次开票），请在编辑弹窗的开票明细中追加或删除，勿直改合计')
+            rec.actual_invoice_amount = _new_inv
         if 'account_diff_adjustment' in data:
             # 兼容旧调用方按「合计」编辑：与现合计的差值生成一条调整明细，
             # 明细为正源、合计为派生（与运作年月→日期同款的派生列策略）
@@ -503,15 +526,26 @@ def ar_record_detail(request, pk):
                     created_by=_PU.objects.filter(id=request.pk_uid).first())
                 rec.account_diff_adjustment = new_total
         if 'tax_amount' in data:
-            rec.tax_amount = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
+            _new_tax = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
+            if _inv_direct_blocked('tax_amount', _new_tax, rec.tax_amount):
+                return err('税额随开票明细派生（差额模式请在开票明细逐笔填税额），勿直改合计')
+            rec.tax_amount = _new_tax
         if 'invoice_date' in data:
-            rec.invoice_date = _normalize_date(data['invoice_date']) or None
+            _new_idate = _normalize_date(data['invoice_date']) or None
+            _new_idate_d = datetime.date.fromisoformat(str(_new_idate)[:10]) if _new_idate else None
+            if _inv_direct_blocked('invoice_date', _new_idate_d, rec.invoice_date):
+                return err('开票日期取首次开票明细的日期（派生），请在开票明细中修改')
+            rec.invoice_date = _new_idate_d
         if 'reconciliation_date' in data:
             rec.reconciliation_date = _normalize_date(data['reconciliation_date']) or None
         if 'target_collection_date' in data:
             rec.target_collection_date = _normalize_date(data['target_collection_date']) or None
         if 'invoice_batch_no' in data:
-            rec.invoice_batch_no = (data['invoice_batch_no'] or '').strip()
+            _new_batch = (data['invoice_batch_no'] or '').strip()
+            if _new_batch and _new_batch != rec.invoice_batch_no and _inv_entries_exist:
+                return err('该记录已有开票明细（单独开票），挂入批次前请先删除开票明细，'
+                           '否则记录级明细与批次事件会两处记账')
+            rec.invoice_batch_no = _new_batch
         if 'notes' in data:
             rec.notes = data['notes'].strip()
         # 触碰了开票字段时校验配套关系（不触碰则不追溯存量数据，避免改备注也被拦）
@@ -2231,6 +2265,116 @@ def ar_adjustment_detail(request, pk, aid):
         # 删除该调整会使未收为负（累计回款已超过 上账+剩余差额）→ 拒绝
         return err(str(e.message if hasattr(e, 'message') else e), 400)
     return ok(_adjustments_payload(rec))
+
+
+def _invoice_entries_payload(rec):
+    """开票明细 + 派生后的主表开票口径（前端就地刷新用）。"""
+    rec.refresh_from_db()
+    return {
+        'invoice_entries': [e.to_dict() for e in rec.invoice_entries.all()],
+        'actual_invoice_amount': (str(rec.actual_invoice_amount)
+                                  if rec.actual_invoice_amount is not None else None),
+        'tax_amount': str(rec.tax_amount) if rec.tax_amount is not None else None,
+        'invoice_date': str(rec.invoice_date) if rec.invoice_date else None,
+        'invoice_status': rec.invoice_status,
+    }
+
+
+def _invoice_entry_guard(request, rec):
+    """开票明细读写的共同守卫（部门/共享切面/字段权限/批次拦截）。返回 err 或 None。"""
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'r_actual_invoice_amount')
+    if denied:
+        return denied
+    if rec.invoice_batch_no:
+        return err(f'该记录属于开票批次「{rec.invoice_batch_no}」，请在批次开票中操作'
+                   '（批次本身支持多次开票，逐次分摊到成员）')
+    return None
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_entries(request, pk):
+    """GET/POST /records/<pk>/invoices — 开票明细（多次开票，各带金额/税额/日期）。
+
+    实际开票额=Σ明细；开票日期=首次开票日；税额=差额模式Σ手填/全额模式按合计自动。
+    累计开票不得超过 可开总额（上账+差额合计），负数明细=红字冲销。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    try:
+        rec = ARRecord.objects.select_related('project').get(pk=pk)
+    except ARRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _invoice_entry_guard(request, rec)
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok(_invoice_entries_payload(rec))
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        amount = _dec(data.get('amount', 0))
+        if not amount:
+            return err('开票金额不能为0（红字冲销请填负数）')
+        tax = (_dec(data.get('tax_amount')) if data.get('tax_amount')
+               not in (None, '') else None)
+        inv_date = _normalize_date(data.get('invoice_date')) or None
+        # 可开上限：累计开票 ≤ 上账 + 差额合计（与批次开票「可开余额」同口径）
+        cap = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
+        existed = (rec.invoice_entries.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+        new_total = existed + amount
+        if new_total > cap:
+            return err(f'累计开票 {new_total:,.2f} 超过可开总额 {cap:,.2f}'
+                       f'（上账+差额）。如账实确有差额请先录差额调整。')
+        if new_total < 0:
+            return err('红字冲销后累计开票不能为负')
+        from paikuan.models import PaikuanUser
+        next_no = (rec.invoice_entries.aggregate(m=Max('entry_no'))['m'] or 0) + 1
+        with transaction.atomic():
+            ARInvoiceEntry.objects.create(
+                ar_record=rec, entry_no=next_no, amount=amount, tax_amount=tax,
+                invoice_date=inv_date, notes=(data.get('notes') or '').strip()[:200],
+                created_by=PaikuanUser.objects.filter(id=request.pk_uid).first())
+            rec.recompute_invoice_from_entries(save=True)
+        return ok(_invoice_entries_payload(rec))
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_entry_detail(request, pk, eid):
+    """DELETE /records/<pk>/invoices/<eid> — 删除一次开票（主表开票口径随之回退）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    try:
+        entry = ARInvoiceEntry.objects.select_related('ar_record__project').get(
+            pk=eid, ar_record_id=pk)
+    except ARInvoiceEntry.DoesNotExist:
+        return err('开票明细不存在', 404)
+    rec = entry.ar_record
+    denied = _invoice_entry_guard(request, rec)
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    with transaction.atomic():
+        entry.delete()
+        rec.recompute_invoice_from_entries(save=True)
+    return ok(_invoice_entries_payload(rec))
 
 
 @csrf_exempt

@@ -473,6 +473,30 @@ class ARRecord(models.Model):
                     Decimal('0.01'), rounding=ROUND_HALF_UP)
         return self.tax_amount
 
+    def recompute_invoice_from_entries(self, save=True):
+        """开票三字段以「开票明细」为正源重算：实际开票额=Σ明细、开票日期=首次开票日、
+        税额=差额模式Σ手填/全额模式按合计自动（recompute_derived 内 _compute_tax）。
+        无明细时全部清空回未开票态。挂批次的记录不走此路径（批次事件是其正源）。"""
+        entries = list(self.invoice_entries.all()) if self.pk else []
+        if entries:
+            self.actual_invoice_amount = sum((e.amount or Decimal('0')) for e in entries)
+            dates = [e.invoice_date for e in entries if e.invoice_date]
+            self.invoice_date = min(dates) if dates else None
+            if self.project.invoice_mode == '差额':
+                taxes = [e.tax_amount for e in entries if e.tax_amount is not None]
+                self.tax_amount = sum(taxes, Decimal('0')) if taxes else None
+        else:
+            self.actual_invoice_amount = None
+            self.invoice_date = None
+            self.tax_amount = None
+        if save:
+            ARRecord.objects.filter(pk=self.pk).update(
+                actual_invoice_amount=self.actual_invoice_amount,
+                invoice_date=self.invoice_date,
+                tax_amount=self.tax_amount,
+            )
+        self.recompute_derived(save=save)   # 全额模式税额随合计重算；未收不受开票影响但保持派生一致
+
     def recompute_derived(self, save=True):
         # 未收回金额口径：上账金额 + 调整额 - 回款金额
         base = self.estimated_amount or Decimal('0')
@@ -691,6 +715,7 @@ class ARRecord(models.Model):
         if include_payments:
             d['payments'] = [p.to_dict() for p in self.payments.order_by('payment_no')]
             d['adjustments'] = [a.to_dict() for a in self.adjustments.all()]
+            d['invoice_entries'] = [e.to_dict() for e in self.invoice_entries.all()]
         return d
 
 
@@ -822,6 +847,44 @@ class ARAdjustment(models.Model):
             'amount': str(self.amount),
             'reason': self.reason,
             'adjust_date': str(self.adjust_date) if self.adjust_date else None,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ARInvoiceEntry(models.Model):
+    """开票明细 — 一条应收可多次开票，每次各带 金额/税额/日期（与差额调整明细同构）。
+
+    ARRecord.actual_invoice_amount / tax_amount / invoice_date 退化为派生：
+    实际开票额=Σ明细金额；开票日期=首次开票日（票后账期/对账默认日以首开为基准，
+    与批次开票取首次事件日的既有口径一致）；税额=全额模式按合计自动算、差额模式
+    Σ明细手填税额。挂批次（invoice_batch_no）的记录仍由批次开票事件管理，不建明细。"""
+    ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
+                                  related_name='invoice_entries', db_index=True)
+    entry_no = models.IntegerField('开票序号')
+    amount = models.DecimalField('开票金额(价税合计)', max_digits=15, decimal_places=2)
+    tax_amount = models.DecimalField('税额(差额模式手填)', max_digits=15, decimal_places=2,
+                                     null=True, blank=True)
+    invoice_date = models.DateField('开票日期', null=True, blank=True, db_index=True)
+    notes = models.CharField('备注', max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_ar_invoices')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_invoice_entries'
+        ordering = ['ar_record', 'entry_no', 'id']
+        indexes = [models.Index(fields=['ar_record', 'invoice_date'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ar_record_id': self.ar_record_id,
+            'entry_no': self.entry_no,
+            'amount': str(self.amount),
+            'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
+            'invoice_date': str(self.invoice_date) if self.invoice_date else None,
+            'notes': self.notes,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
@@ -963,6 +1026,11 @@ class AdvanceRecord(models.Model):
     # 已退款金额：仅对预付有意义——供应商退回预付的现金（记在「日常收款·预付退款」并回关本笔），
     # 与核销并列冲减未核销余额；退款是现金事件（在日常收款侧计流入），核销不是。
     refunded_amount = models.DecimalField('已退款金额', max_digits=15, decimal_places=2, default=0)
+    # 转移（往来单位间/项目间权益转移，非现金事件）：派生合计，正源为 AdvanceTransfer
+    transferred_in_amount = models.DecimalField('累计转入', max_digits=15, decimal_places=2, default=0)
+    transferred_out_amount = models.DecimalField('累计转出', max_digits=15, decimal_places=2, default=0)
+    # 账龄承袭基准：转入时取来源记录的有效账龄起点（防止用转移"洗白"长挂账）
+    aging_base_date = models.DateField('账龄承袭基准日', null=True, blank=True)
     balance_amount = models.DecimalField('未核销余额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
@@ -987,31 +1055,60 @@ class AdvanceRecord(models.Model):
         ]
 
     def recompute_derived(self, save=True):
-        """未核销余额口径：预收/预付金额 − 累计核销 − 累计退款（预付退款回冲）。"""
+        """未核销余额口径：收付金额 + 转入 − 转出 − 累计核销 − 累计退款。
+        转移为权益重分类、非现金事件——现金类统计只看收付明细，不受转移影响。"""
         base = self.advance_amount or Decimal('0')
         total_wo = Decimal('0')
         total_refund = Decimal('0')
+        t_in = Decimal('0')
+        t_out = Decimal('0')
         if self.pk:
             total_wo = self.writeoffs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
             total_refund = self.refunds.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-        balance = base - total_wo - total_refund
+            t_in = (self.transfers_in.filter(kind='equity')
+                    .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            t_out = (self.transfers_out.filter(kind='equity')
+                     .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+        balance = base + t_in - t_out - total_wo - total_refund
         if balance < Decimal('0'):
             def _f(v):
                 return f'{v:,.2f}'
             raise ValidationError(
-                f'未核销余额不能为负：金额 {_f(base)} − 累计核销 {_f(total_wo)} '
-                f'− 累计退款 {_f(total_refund)} = {_f(balance)}。请核对金额、核销或退款记录。'
+                f'未核销余额不能为负：金额 {_f(base)} + 转入 {_f(t_in)} − 转出 {_f(t_out)} '
+                f'− 累计核销 {_f(total_wo)} − 累计退款 {_f(total_refund)} = {_f(balance)}。'
+                f'请核对金额、转移、核销或退款记录。'
             )
         q = Decimal('0.01')
         self.written_off_amount = total_wo.quantize(q, rounding=ROUND_HALF_UP)
         self.refunded_amount = total_refund.quantize(q, rounding=ROUND_HALF_UP)
+        self.transferred_in_amount = t_in.quantize(q, rounding=ROUND_HALF_UP)
+        self.transferred_out_amount = t_out.quantize(q, rounding=ROUND_HALF_UP)
         self.balance_amount = balance.quantize(q, rounding=ROUND_HALF_UP)
         if save:
             AdvanceRecord.objects.filter(pk=self.pk).update(
                 written_off_amount=self.written_off_amount,
                 refunded_amount=self.refunded_amount,
+                transferred_in_amount=self.transferred_in_amount,
+                transferred_out_amount=self.transferred_out_amount,
                 balance_amount=self.balance_amount,
             )
+
+    def recompute_aging_base(self, save=True):
+        """账龄承袭基准 = 各转入来源的有效账龄起点最早值（来源自身也可能承袭过）；
+        整笔迁移(cash_lines)按迁入收付行的最早收付日期承袭。"""
+        base = None
+        for t in self.transfers_in.select_related('from_advance'):
+            if t.kind == 'cash_lines':
+                ed = (t.detail or {}).get('earliest_date')
+                eff = _as_date(ed) if ed else None
+            else:
+                src = t.from_advance
+                eff = min(filter(None, [src.aging_base_date, src.occur_date]), default=None)
+            if eff and (base is None or eff < base):
+                base = eff
+        self.aging_base_date = base
+        if save:
+            AdvanceRecord.objects.filter(pk=self.pk).update(aging_base_date=base)
 
     def save(self, *args, **kwargs):
         if self.project_id:
@@ -1022,6 +1119,11 @@ class AdvanceRecord(models.Model):
     @property
     def writeoff_status(self):
         if (self.balance_amount or Decimal('0')) <= 0:
+            # 全靠转出清零、无核销无退款 → 标「已转出」
+            if ((self.written_off_amount or Decimal('0')) <= 0
+                    and (self.refunded_amount or Decimal('0')) <= 0
+                    and (self.transferred_out_amount or Decimal('0')) > 0):
+                return '已转出'
             # 全靠退款清零、无核销 → 标「已退款」，与「已核销」区分
             if ((self.written_off_amount or Decimal('0')) <= 0
                     and (self.refunded_amount or Decimal('0')) > 0):
@@ -1037,7 +1139,8 @@ class AdvanceRecord(models.Model):
         today = today or timezone.localdate()
         if (self.balance_amount or Decimal('0')) <= 0:
             return {'pending_days': 0, 'is_overdue': False, 'overdue_days': 0}
-        base_date = _as_date(self.occur_date)
+        base_date = min(filter(None, [_as_date(self.occur_date),
+                                      _as_date(self.aging_base_date)]), default=None)
         pending_days = (today - base_date).days if base_date else 0
         exp = _as_date(self.expected_writeoff_date)
         is_overdue = bool(exp and today > exp)
@@ -1062,6 +1165,9 @@ class AdvanceRecord(models.Model):
             'expected_writeoff_date': str(self.expected_writeoff_date) if self.expected_writeoff_date else None,
             'written_off_amount': str(self.written_off_amount),
             'refunded_amount': str(self.refunded_amount),
+            'transferred_in_amount': str(self.transferred_in_amount),
+            'transferred_out_amount': str(self.transferred_out_amount),
+            'aging_base_date': str(self.aging_base_date) if self.aging_base_date else None,
             'balance_amount': str(self.balance_amount),
             'writeoff_status': self.writeoff_status,
             'notes': self.notes,
@@ -1072,6 +1178,10 @@ class AdvanceRecord(models.Model):
         if include_writeoffs:
             d['writeoffs'] = [w.to_dict() for w in self.writeoffs.order_by('writeoff_no')]
             d['installments'] = [i.to_dict() for i in self.installments.order_by('install_no')]
+            d['transfers_in'] = [t.to_dict() for t in self.transfers_in.select_related(
+                'from_advance', 'from_advance__project', 'to_advance', 'to_advance__project', 'created_by')]
+            d['transfers_out'] = [t.to_dict() for t in self.transfers_out.select_related(
+                'from_advance', 'from_advance__project', 'to_advance', 'to_advance__project', 'created_by')]
         return d
 
 
@@ -1140,6 +1250,66 @@ class BatchInvoiceEvent(models.Model):
             'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
             'notes': self.notes,
             'allocations': self.allocations,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AdvanceTransfer(models.Model):
+    """预收/预付转移单 — 往来单位间/项目间的权益转移（非现金事件）。
+
+    合同主体变更、集团内关联公司调整、预收落位到具体项目等场景：
+    余额从源记录移到目标记录，现金收付史保留在源侧（钱当时确实收/付在那里），
+    现金流/区间收付统计不受影响；仅存量余额口径（recompute_derived）纳入转移项。
+    目标侧账龄承袭源记录有效账龄起点（recompute_aging_base），防止转移洗白挂账。"""
+    KIND_CHOICES = [('equity', '权益划转'), ('cash_lines', '整笔迁移')]
+
+    from_advance = models.ForeignKey(AdvanceRecord, on_delete=models.PROTECT,
+                                     related_name='transfers_out', db_index=True)
+    to_advance = models.ForeignKey(AdvanceRecord, on_delete=models.PROTECT,
+                                   related_name='transfers_in', db_index=True)
+    # equity=按金额权益划转（不动现金流水，计入余额公式）；
+    # cash_lines=按笔迁移（收付/核销行物理移动到目标，余额自然随行派生，本单不计入余额公式）
+    kind = models.CharField('转移类型', max_length=12, choices=KIND_CHOICES,
+                            default='equity', db_index=True)
+    amount = models.DecimalField('转移金额', max_digits=15, decimal_places=2)
+    transfer_date = models.DateField('转移日期', db_index=True)
+    reason = models.CharField('转移原因', max_length=200)
+    # cash_lines 载荷：{'installments': [{'id','orig_no'}...], 'writeoffs': [{'id','orig_no'}...],
+    #                  'wo_amount': '…', 'earliest_date': 'YYYY-MM-DD'}（撤销恢复与账龄承袭用）
+    detail = models.JSONField('迁移载荷', default=dict, blank=True)
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_advance_transfers')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_advance_transfers'
+        ordering = ['transfer_date', 'id']
+        indexes = [models.Index(fields=['transfer_date'])]
+        constraints = [
+            models.CheckConstraint(check=models.Q(amount__gt=0),
+                                   name='advance_transfer_amount_positive'),
+            models.CheckConstraint(check=~models.Q(from_advance=models.F('to_advance')),
+                                   name='advance_transfer_not_self'),
+        ]
+
+    def _side(self, rec):
+        return {'id': rec.id, 'counterparty': rec.counterparty,
+                'short_name': rec.project.short_name if rec.project_id else None,
+                'delivery_dept': rec.delivery_dept, 'direction': rec.direction}
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'kind': self.kind,
+            'amount': str(self.amount),
+            'transfer_date': str(self.transfer_date),
+            'reason': self.reason,
+            'from': self._side(self.from_advance),
+            'to': self._side(self.to_advance),
+            'moved_installments': len((self.detail or {}).get('installments', [])),
+            'moved_writeoffs': len((self.detail or {}).get('writeoffs', [])),
+            'wo_amount': (self.detail or {}).get('wo_amount'),
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

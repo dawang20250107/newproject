@@ -233,6 +233,160 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(gp[ci['乙部']], 200.0)
         self.assertEqual(gp[ci['合计']], 800.0)
 
+    def test_operating_export_hierarchy_ratios_and_adjustment_formulas(self):
+        # 经营情况表导出：一级科目→部门→明细逐级行；合计/汇总/费销比/环比/调整区均为公式
+        import io
+        import openpyxl
+        # 用事业部验证部门顺位（集团总部另有一套顺位表）
+        bu = '运输事业部'
+        rev, sell = self.l1[REV], self.l1['销售费用']
+        d1 = L2Category.objects.create(business_unit=bu, name='一部', sort_order=1)
+        # 排序对抗样本：sort_order 故意与约定顺位相反，断言按 CFO 顺位而非导入顺序
+        d_cw = L2Category.objects.create(business_unit=bu, name='财务部', sort_order=2)
+        d_zj = L2Category.objects.create(business_unit=bu, name='总经办', sort_order=3)
+        l3s = L3Category.objects.create(business_unit=bu, l1_category=sell,
+                                        name='差旅费', kingdee_code='6601.02', sort_order=1)
+        for month, rv, sv in ((4, 1000, 100), (5, 2000, 150)):
+            batch = ImportBatch.objects.create(
+                business_unit=bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d1, amount=Decimal(rv))
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d_cw, amount=Decimal('10'))
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=d_zj, amount=Decimal('20'))
+            FinancialEntry.objects.create(batch=batch, l1=sell, l2=d1, l3=l3s, amount=Decimal(sv))
+
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        ws = wb[bu]
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        # 费销比列紧跟对应月份列
+        self.assertEqual(heads, ['科目明细', '合计', '4月', '4月费销比', '5月', '5月费销比', '金额环比', '备注'])
+        rowmap = {}
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if label and label not in rowmap:
+                rowmap[label] = r
+        rr, sr = rowmap[REV], rowmap['销售费用']
+        dr, xr = rowmap['一部'], rowmap['差旅费']
+        # 部门按 CFO 约定顺位：总经办 > 财务部 > 其他（一部），与 sort_order 无关
+        self.assertLess(rowmap['总经办'], rowmap['财务部'])
+        self.assertLess(rowmap['财务部'], dr)
+        # 汇总行/合计列是公式；叶子行是数值
+        l1_formula = str(ws.cell(row=rr, column=3).value)
+        self.assertTrue(l1_formula.startswith('='))                           # 收入 L1 = 部门行之和
+        for d in (rowmap['总经办'], rowmap['财务部'], dr):
+            self.assertIn(f'C{d}', l1_formula)
+        self.assertEqual(ws.cell(row=dr, column=3).value, 1000.0)             # 收入部门行 = 数值（无明细）
+        self.assertTrue(str(ws.cell(row=sr, column=2).value).startswith('=')) # 合计列公式
+        self.assertEqual(ws.cell(row=xr, column=5).value, 150.0)              # 明细叶子 = 数值
+        # 一级费销比引用收入一级行；部门费销比引用本部门收入行
+        self.assertIn(f'/C{rr}', str(ws.cell(row=sr, column=4).value))
+        # 成本类科目同样显示费销比（成本÷收入）
+        cost_r = rowmap['主营业务成本']
+        self.assertIn(f'/C{rr}', str(ws.cell(row=cost_r, column=4).value))
+        # 部门/明细行左对齐缩进生效（Excel 缩进需 horizontal='left'）
+        self.assertEqual(ws.cell(row=dr, column=1).alignment.horizontal, 'left')
+        self.assertTrue(ws.cell(row=dr, column=1).alignment.indent >= 1)
+        self.assertTrue(ws.cell(row=xr, column=1).alignment.indent > ws.cell(row=dr, column=1).alignment.indent)
+        # 部门行加粗
+        self.assertTrue(ws.cell(row=dr, column=1).font.bold)
+        sell_dept_r = None
+        for r in range(sr + 1, xr):
+            if (ws.cell(row=r, column=1).value or '').strip() == '一部':
+                sell_dept_r = r
+        self.assertIsNotNone(sell_dept_r)
+        self.assertIn(f'/C{dr}', str(ws.cell(row=sell_dept_r, column=4).value))
+        # 环比 = 5月 − 4月
+        self.assertEqual(ws.cell(row=sr, column=7).value, f'=E{sr}-C{sr}')
+        # 调整区：调整合计为 SUM 公式；实际经营情况 = 经营净利 + 调整合计
+        adj, fin, np_r = rowmap['调整合计'], rowmap['实际经营情况'], rowmap[NET_PROFIT]
+        self.assertTrue(str(ws.cell(row=adj, column=3).value).startswith('=SUM('))
+        self.assertEqual(ws.cell(row=fin, column=3).value, f'=C{np_r}+C{adj}')
+        # 备注列不带自动备注——仅调增调减三行按约定带填写口径指引
+        adj_start = rowmap['调增调减明细']
+        guide_rows = {}
+        for r in range(3, ws.max_row + 1):
+            v = ws.cell(row=r, column=8).value
+            if adj_start < r < adj:
+                guide_rows[(ws.cell(row=r, column=1).value or '').strip()] = v
+            else:
+                self.assertIn(v, (None, ''), f'行{r} 备注应为空：{v!r}')
+        self.assertEqual(guide_rows['调增：'], '收入类调增填正数；成本费用类调增填负数')
+        self.assertEqual(guide_rows['调减：'], '收入类调减填负数；成本费用类调减填正数')
+
+    def test_operating_export_outline_hides_quiet_last_two_months(self):
+        # 末两月均无发生的部门/明细行 → 大纲第1级（Excel「1」一键收起）；
+        # 有发生的行、调增调减区不标级
+        import io
+        import openpyxl
+        bu = '阔展事业部'
+        rev = self.l1[REV]
+        d_old = L2Category.objects.create(business_unit=bu, name='仅早期部', sort_order=1)
+        d_act = L2Category.objects.create(business_unit=bu, name='活跃部', sort_order=2)
+        d_half = L2Category.objects.create(business_unit=bu, name='半活跃部', sort_order=3)
+        # 半活跃部：4月无发生、仅5月有 → 末两月并非同时为0，不得收起
+        for month, dept, amt in ((3, d_old, 900), (3, d_act, 100), (4, d_act, 200),
+                                 (5, d_act, 700), (5, d_half, 50)):
+            batch = ImportBatch.objects.create(
+                business_unit=bu, year=2026, month=month, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, l2=dept, amount=Decimal(amt))
+
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026, 'bu': bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        ws = openpyxl.load_workbook(io.BytesIO(resp.content))[bu]
+        rowmap = {}
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if label and label not in rowmap:
+                rowmap[label] = r
+
+        def lvl(r):
+            return ws.row_dimensions[r].outline_level or 0
+        self.assertEqual(lvl(rowmap['仅早期部']), 1)      # 末两月(4,5)无发生 → 可收起
+        self.assertEqual(lvl(rowmap['活跃部']), 0)        # 5月有发生 → 常显
+        self.assertEqual(lvl(rowmap['半活跃部']), 0)      # 仅单月为0（4月0、5月有）→ 常显
+        self.assertEqual(lvl(rowmap[REV]), 0)             # 一级科目不标级
+        self.assertEqual(lvl(rowmap['调整合计']), 0)      # 调整区不受影响
+        self.assertEqual(lvl(rowmap['实际经营情况']), 0)
+
+        # 全表不变式：凡标 1 级的行，末两月（此表为 4/5 月 → F、H 列）单元格
+        # 必为 0/空/'-'；一级科目与调整区起（含）以下所有行必为 0 级
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        last2_cols = [heads.index('4月') + 1, heads.index('5月') + 1]
+        l1_names = set(L1Category.objects.values_list('name', flat=True))
+        adj_start = rowmap['调增调减明细']
+        for r in range(3, ws.max_row + 1):
+            label = (ws.cell(row=r, column=1).value or '').strip()
+            if lvl(r) == 1:
+                for c in last2_cols:
+                    v = ws.cell(row=r, column=c).value
+                    if isinstance(v, str) and v.startswith('='):
+                        continue   # 部门汇总公式：其可收起性由全部明细子行静默保证（子行已逐一校验）
+                    self.assertTrue(v in (None, '', '-', 0) or abs(float(v)) < 0.005,
+                                    f'行{r}「{label}」被标收起但末两月有值 {v!r}')
+            if label in l1_names or r >= adj_start:
+                self.assertEqual(lvl(r), 0, f'行{r}「{label}」不应被标收起')
+
+    def test_operating_export_sheet_order_follows_bu_rank(self):
+        # Sheet 页签按 CFO 约定顺位：集团总部>阔展>运输>劳务>自营>多式联运>供应链
+        import io
+        import openpyxl
+        rev = self.l1[REV]
+        for bu in ('供应链事业部', '运输事业部', '集团总部', '阔展事业部'):
+            batch = ImportBatch.objects.create(
+                business_unit=bu, year=2026, month=5, batch_type=ImportBatch.TYPE_DEPT,
+                status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+                file_name='t.xlsx')
+            FinancialEntry.objects.create(batch=batch, l1=rev, amount=Decimal('1'))
+        resp = self.client.get('/api/cw/report/operating-export', {'year': 2026}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        self.assertEqual(wb.sheetnames, ['集团总部', '阔展事业部', '运输事业部', '供应链事业部'])
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)

@@ -221,7 +221,7 @@ const deptCompareOption = computed(() => {
   }
 })
 
-// ── 预算燃尽跑道（预算板块专属图）─────────────────────────────────────────────
+// ── 预算执行进度（预算板块专属图）─────────────────────────────────────────────
 // 回答预算的第一问题「预算池烧得快不快」：收款=burn-up（累计实收向预算爬坡），
 // 付款=burn-down（预算余额逐月递减）；实/虚线对比即「快/慢于匀速」，
 // 付款余额跌破 0 的段落转红（超烧预警）。单月区间画不出跑道，自动隐藏。
@@ -262,7 +262,7 @@ const burnOption = computed(() => {
         itemStyle: { color: '#e65100' },
         markLine: { silent: true, symbol: 'none',
           lineStyle: { color: 'rgba(198,40,40,.55)', type: 'dashed' },
-          label: { formatter: '烧穿线', color: '#c62828', fontSize: 10, position: 'insideEndBottom' },
+          label: { formatter: '预算耗尽线', color: '#c62828', fontSize: 10, position: 'insideEndBottom' },
           data: [{ yAxis: 0 }] } },
       { name: '付款匀速基准', type: 'line', data: payPace, symbol: 'none',
         itemStyle: { color: 'rgba(230,81,0,.5)' },
@@ -918,10 +918,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
 
-      <!-- 预算燃尽跑道（跨月区间才有跑道，单月自动隐藏） -->
+      <!-- 预算执行进度（跨月区间才有跑道，单月自动隐藏） -->
       <div v-if="burnOption" class="card" style="margin-top:16px;padding:20px">
-        <div class="section-title">预算燃尽跑道
-          <span class="section-sub">绿实线=累计实收爬向预算 · 橙实线=付款预算余额递减 · 虚线=匀速基准 · 跌破烧穿线转红</span>
+        <div class="section-title">预算执行进度
+          <span class="section-sub">绿实线=累计实收爬向预算 · 橙实线=付款预算余额递减 · 虚线=匀速基准 · 预算余额跌破 0 转红</span>
         </div>
         <BaseChart :option="burnOption" height="280px" />
       </div>

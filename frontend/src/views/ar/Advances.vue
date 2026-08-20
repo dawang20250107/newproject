@@ -78,6 +78,7 @@ const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q:
 // ── 实际收付时间预设（与日常收款同款交互）────────────────────────────────────
 const DATE_PRESETS = [
   { k: 'all', l: '全部' },
+  { k: 'today', l: '本日' }, { k: 'thisweek', l: '本周' },
   { k: 'thismonth', l: '本月' }, { k: 'lastmonth', l: '上月' },
   { k: 'thisquarter', l: '本季度' }, { k: 'lastquarter', l: '上季度' },
   { k: 'halfyear', l: '近半年' }, { k: 'thisyear', l: '本年' }, { k: 'lastyear', l: '去年' },
@@ -90,6 +91,14 @@ function computePreset(k) {
   const mk = (a, b) => ({ start: _ymd(a), end: _ymd(b) })
   switch (k) {
     case 'all': return { start: '', end: '' }
+    case 'today': return mk(t, t)
+    // 本周=周一~周日整周（含未来几天）：区间是完整自然周，而非周一到今天
+    case 'thisweek': {
+      const day = t.getDay()
+      const mon = new Date(t); mon.setDate(d - (day === 0 ? 6 : day - 1))
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
+      return mk(mon, sun)
+    }
     case 'thismonth': return mk(new Date(y, m, 1), t)
     case 'lastmonth': return mk(new Date(y, m - 1, 1), new Date(y, m, 0))
     case 'thisquarter': return mk(new Date(y, Math.floor(m / 3) * 3, 1), t)
@@ -116,6 +125,7 @@ function applyPreset(k) {
 watch([() => filters.start_date, () => filters.end_date],
       () => { if (!_applyingPreset) activePreset.value = '' }, { flush: 'sync' })
 // KPI 区间提示：让「页面汇总=当前筛选汇总」这一点对用户可见
+const rangeActive = computed(() => !!(filters.start_date || filters.end_date))
 const rangeLabel = computed(() => {
   if (!filters.start_date && !filters.end_date) return '全部期间'
   return `${filters.start_date || '…'} ~ ${filters.end_date || '…'}`
@@ -149,6 +159,46 @@ function buildParams() {
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   return p
+}
+
+// ── 按单位聚合视图（客户/供应商 → 名下项目 两级下钻）─────────────────────────
+const viewMode = ref('detail')          // detail=明细台账 | bycp=按单位聚合
+const cpRows = ref([])
+const cpCashBasis = ref(false)          // true=区间实际收付口径（选了收付时间）
+const cpLoading = ref(false)
+const expandedCps = ref(new Set())
+function toggleCpExpand(cp) {
+  const s = new Set(expandedCps.value); s.has(cp) ? s.delete(cp) : s.add(cp); expandedCps.value = s
+}
+async function loadByCp() {
+  if (!isAdvanceMode.value || viewMode.value !== 'bycp') return
+  cpLoading.value = true
+  try {
+    const p = { direction: direction.value, ...filters }
+    if (projectFilter.value) p.project_id = projectFilter.value.id
+    const res = await ar.advancesByCounterparty(p)
+    cpRows.value = res.data.rows
+    cpCashBasis.value = res.data.cash_basis
+  } catch (e) { toast.error(e?.msg || e?.error || '聚合加载失败') }
+  finally { cpLoading.value = false }
+}
+function switchView(v) {
+  if (viewMode.value === v) return
+  viewMode.value = v
+  if (v === 'bycp') loadByCp()
+}
+// 下钻：聚合行 → 明细视图（单位精确匹配走列头筛选管线，与方案/漏斗状态一致）
+function drillCp(row) {
+  if (row.counterparty !== '（未填单位）') colFilters.counterparty = { op: 'eq', value: row.counterparty }
+  viewMode.value = 'detail'
+  load(true)
+}
+function drillProject(row, p) {
+  if (row.counterparty !== '（未填单位）') colFilters.counterparty = { op: 'eq', value: row.counterparty }
+  if (p.project_id) projectFilter.value = { id: p.project_id, label: p.short_name }
+  else colFilters.project_short_name = { op: 'empty' }   // 散单：项目为空
+  viewMode.value = 'detail'
+  load(true)
 }
 
 // 部门下拉数据源：优先用与系统常量匹配的事业部；若用户真实部门名不在常量内
@@ -203,6 +253,8 @@ async function load(reset = false) {
     // 选中集只保留仍在当前列表中的行（翻页/切方向/筛选后清掉不可见的陈旧选中）
     const live = new Set(items.value.map(r => r.id))
     selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
+    // 聚合视图开着时同步刷新（筛选/区间/方向变化经由 load 汇聚于此，单点挂钩全覆盖）
+    if (viewMode.value === 'bycp') loadByCp()
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
@@ -479,7 +531,7 @@ async function saveAndNext() {
   finally { saving.value = false }
 }
 async function removeRec(rec) {
-  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，系统将拦截——需先在「核销」明细删除核销、或在日常收款解除退款关联。`))) return
+  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，将无法删除；请先在「核销」明细中删除核销记录，或在日常收款中解除退款关联。`))) return
   try { await ar.deleteAdvance(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -559,13 +611,30 @@ async function openInstallments(rec) {
   Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
   instList.value = []
   showInstModal.value = true
+  loadTransfers()
   try {
     const res = await ar.listAdvInstallments(rec.id)
     instList.value = res.data.items
   } catch (_) { instList.value = [] }
 }
-async function addInstallment() {
-  if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为0（可负=退回）'); return }
+// 新增收付卡片：长列表时底部表单要拉很久 → 右上角按钮弹出固定居中卡片。
+// Esc/取消 关卡片；Enter=保存；「保存并继续」连录多笔不关卡片；遮罩仅在未填写时可点关。
+const showInstAdd = ref(false)
+const instAmtInput = ref(null)
+const instListBody = ref(null)
+const lastInstId = ref(null)
+function openInstAdd() {
+  Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
+  showInstAdd.value = true
+  nextTick(() => instAmtInput.value?.focus())
+}
+function instAddMaskClick() {
+  if (!String(instForm.amount).trim() && !instForm.notes.trim()) showInstAdd.value = false
+}
+async function saveInstAdd(stay = false) {
+  if (instBusy.value) return
+  if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为 0；如为退回，请填写负数'); return }
+  if (!instForm.occur_date) { toast.error('请选择收付日期'); return }
   instBusy.value = true
   try {
     const res = await ar.addAdvInstallment(instRec.value.id, { ...instForm })
@@ -574,9 +643,227 @@ async function addInstallment() {
     await load()
     const fresh = items.value.find(r => r.id === instRec.value.id)
     if (fresh) instRec.value = fresh
+    // 新行高亮并滚入视野（列表内滚动，不动弹窗）
+    const added = instList.value[instList.value.length - 1]
+    lastInstId.value = added?.id ?? null
+    nextTick(() => {
+      const el = instListBody.value
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
+    toast.success(`已登记第 ${added?.install_no ?? instList.value.length} 笔`)
+    if (stay) nextTick(() => instAmtInput.value?.focus())
+    else showInstAdd.value = false
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { instBusy.value = false }
 }
+// ── 转移（单位间/项目间权益转移，非现金事件；跨事业部仅超管）────────────────
+const canTransferAction = computed(() => auth.canAction('adv_transfer'))
+const showTransfer = ref(false)
+const transferBusy = ref(false)
+const transferList = reactive({ tin: [], tout: [] })
+const transferForm = reactive({
+  amount: '', date: todayCST(), reason: '', mode: 'existing',
+  to_advance_id: '', target_label: '', target_kw: '',
+  new_counterparty: '', new_project_id: '', new_project_kw: '',
+})
+const targetOpts = ref([])
+const targetProjOpts = ref([])
+const transferAmtInput = ref(null)
+
+async function loadTransfers() {
+  if (!instRec.value) return
+  try {
+    const res = await ar.listAdvTransfers(instRec.value.id)
+    transferList.tin = res.data.transfers_in || []
+    transferList.tout = res.data.transfers_out || []
+  } catch { transferList.tin = []; transferList.tout = [] }
+}
+const migInsts = ref([])           // 按笔迁移：选中的收付明细数组（空=按金额权益划转）
+const migCarry = ref('auto')       // 核销随迁：auto=自动同步（推荐）/ none=仅迁收付
+const migPureWoSum = ref(0)        // 纯登记核销池合计（预览随迁上限）
+const instSel = ref(new Set())     // 收付明细多选（批量迁移）
+function toggleInstSel(id) {
+  const st = new Set(instSel.value)
+  st.has(id) ? st.delete(id) : st.add(id)
+  instSel.value = st
+}
+function toggleInstSelAll() {
+  instSel.value = instSel.value.size === instList.value.length
+    ? new Set() : new Set(instList.value.map(i => i.id))
+}
+function _resetTransferForm() {
+  Object.assign(transferForm, {
+    amount: '', date: todayCST(), reason: '', mode: 'existing',
+    to_advance_id: '', target_label: '', target_kw: '',
+    new_counterparty: '', new_project_id: '', new_project_kw: '',
+  })
+  targetOpts.value = []; targetProjOpts.value = []
+}
+function openTransfer() {
+  migInsts.value = []
+  _resetTransferForm()
+  showTransfer.value = true
+  searchTargets('')
+  nextTick(() => transferAmtInput.value?.focus())
+}
+// 按笔迁移：收付当初记错了对象 → 整笔物理迁走（现金流水随行更正）；支持多笔批量
+async function openInstMigrate(list) {
+  migInsts.value = Array.isArray(list) ? list : [list]
+  migCarry.value = 'auto'
+  _resetTransferForm()
+  showTransfer.value = true
+  searchTargets('')
+  migPureWoSum.value = 0
+  try {
+    const res = await ar.listWriteoffs(instRec.value.id)
+    const rows = Array.isArray(res.data) ? res.data : (res.data.items || [])
+    migPureWoSum.value = rows
+      .filter(w => !w.ar_record_id && !w.payment_id)
+      .reduce((s, w) => s + (parseFloat(w.amount) || 0), 0)
+  } catch { migPureWoSum.value = 0 }
+}
+function migrateSelected() {
+  const list = instList.value.filter(i => instSel.value.has(i.id))
+  if (!list.length) { toast.error('请先勾选要迁移的收付明细'); return }
+  openInstMigrate(list)
+}
+const migAmt = computed(() => migInsts.value.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0))
+// 自动同步随迁核销 = min(迁移额, 已核销合计, 纯登记核销池)
+const migCarryAmt = computed(() => {
+  if (migCarry.value !== 'auto' || !instRec.value) return 0
+  return +Math.min(migAmt.value, Number(instRec.value.written_off_amount) || 0,
+                   migPureWoSum.value).toFixed(2)
+})
+// 迁移后源余额预览 = 现余额 − 迁移额 + 随迁核销
+const migSrcAfter = computed(() => {
+  if (!migInsts.value.length || !instRec.value) return 0
+  return +(Number(instRec.value.balance_amount) - migAmt.value + migCarryAmt.value).toFixed(2)
+})
+let targetTimer = null
+async function searchTargets(kw) {
+  try {
+    const res = await ar.listAdvances({ direction: direction.value, q: kw || undefined, size: 8 })
+    targetOpts.value = (res.data.items || []).filter(r => r.id !== instRec.value?.id)
+  } catch { targetOpts.value = [] }
+}
+function onTargetKw() {
+  transferForm.to_advance_id = ''; transferForm.target_label = ''
+  clearTimeout(targetTimer)
+  targetTimer = setTimeout(() => searchTargets(transferForm.target_kw.trim()), 220)
+}
+function pickTarget(r) {
+  transferForm.to_advance_id = r.id
+  transferForm.target_label = `${r.counterparty || '—'}${r.short_name ? '·' + r.short_name : ''}（余额 ${fmtAmt(r.balance_amount)}）`
+  transferForm.target_kw = ''
+  targetOpts.value = []
+}
+let tpTimer = null
+async function searchTargetProjects(kw) {
+  try {
+    const res = await ar.listProjects({ size: 8, q: kw || undefined })
+    targetProjOpts.value = res.data.items || []
+  } catch { targetProjOpts.value = [] }
+}
+function onTargetProjKw() {
+  transferForm.new_project_id = ''
+  clearTimeout(tpTimer)
+  tpTimer = setTimeout(() => searchTargetProjects(transferForm.new_project_kw.trim()), 220)
+}
+function pickTargetProject(pr) {
+  transferForm.new_project_id = pr.id
+  transferForm.new_project_kw = `${pr.short_name}（${pr.delivery_dept}）`
+  targetProjOpts.value = []
+}
+async function submitTransfer() {
+  if (transferBusy.value) return
+  if (!migInsts.value.length && !(parseFloat(transferForm.amount) > 0)) { toast.error('请填写转移金额（大于0）'); return }
+  if (!transferForm.date) { toast.error('请选择转移日期'); return }
+  if (!transferForm.reason.trim()) { toast.error('请填写转移原因（如：合同主体变更/项目落位），以便追溯'); return }
+  if (migInsts.value.length && migSrcAfter.value < 0) {
+    toast.error('迁移后源余额为负：可自动随迁的纯登记核销不足，请先撤销对应关联核销'); return
+  }
+  const body = { transfer_date: transferForm.date, reason: transferForm.reason }
+  if (migInsts.value.length) {
+    body.installment_ids = migInsts.value.map(i => i.id)
+    body.carry_mode = migCarry.value
+  } else {
+    body.amount = transferForm.amount
+  }
+  if (transferForm.mode === 'existing') {
+    if (!transferForm.to_advance_id) { toast.error('请选择目标记录'); return }
+    body.to_advance_id = transferForm.to_advance_id
+  } else {
+    if (!transferForm.new_counterparty.trim()) { toast.error('请填写目标往来单位'); return }
+    body.new_target = { counterparty: transferForm.new_counterparty.trim() }
+    if (transferForm.new_project_id) body.new_target.project_id = transferForm.new_project_id
+  }
+  transferBusy.value = true
+  try {
+    if (migInsts.value.length) {
+      await ar.migrateAdvInstallments(instRec.value.id, body)
+      instSel.value = new Set()
+      const res = await ar.listAdvInstallments(instRec.value.id)
+      instList.value = res.data.items
+    } else {
+      await ar.addAdvTransfer(instRec.value.id, body)
+    }
+    toast.success(migInsts.value.length ? '已整笔迁移' : '已转移')
+    showTransfer.value = false
+    await loadTransfers()
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { transferBusy.value = false }
+}
+async function undoTransfer(t) {
+  if (!(await confirmDlg(`撤销转移「${t.from.counterparty} → ${t.to.counterparty}：${fmtAmt(t.amount)}」？双方余额将复原。`))) return
+  try {
+    await ar.deleteAdvTransfer(instRec.value.id, t.id)
+    toast.success('已撤销')
+    await loadTransfers()
+    // 整笔迁移撤销会把收付/核销行搬回来 → 同步刷新明细列表
+    try {
+      const res = await ar.listAdvInstallments(instRec.value.id)
+      instList.value = res.data.items
+    } catch {}
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+}
+// 核销迁移（核销挂错记录的更正；仅纯登记核销）
+const migrateWo = ref(null)
+const migrateKw = ref('')
+const migrateOpts = ref([])
+let migrateTimer = null
+function openMigrate(w) {
+  migrateWo.value = w
+  migrateKw.value = ''
+  migrateOpts.value = []
+  searchMigrateTargets('')
+}
+async function searchMigrateTargets(kw) {
+  try {
+    const res = await ar.listAdvances({ direction: direction.value, q: kw || undefined, size: 8 })
+    migrateOpts.value = (res.data.items || []).filter(r => r.id !== woRec.value?.id)
+  } catch { migrateOpts.value = [] }
+}
+function onMigrateKw() { clearTimeout(migrateTimer); migrateTimer = setTimeout(() => searchMigrateTargets(migrateKw.value.trim()), 220) }
+async function doMigrate(target) {
+  if (!(await confirmDlg(`将第${migrateWo.value.writeoff_no}笔核销（${fmtAmt(migrateWo.value.amount)}）迁移到「${target.counterparty || '—'}${target.short_name ? '·' + target.short_name : ''}」？`))) return
+  try {
+    await ar.migrateAdvWriteoff(woRec.value.id, migrateWo.value.id, { to_advance_id: target.id })
+    toast.success('已迁移')
+    migrateWo.value = null
+    const res = await ar.listWriteoffs(woRec.value.id)
+    woList.value = Array.isArray(res.data) ? res.data : (res.data.items || [])
+    await load()
+    const fresh = items.value.find(r => r.id === woRec.value.id)
+    if (fresh) woRec.value = fresh
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+}
+
 async function delInstallment(i) {
   if (!(await confirmDlg(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`))) return
   instBusy.value = true
@@ -768,10 +1055,10 @@ async function copyWholeRow(row, cols) {
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
 
-// 双击数据行 = 打开编辑（主操作）；默认编辑预收/预付记录，可传入供应商编辑等其它处理器
-function onRowDblClick(item, e, handler = openEdit) {
+// 双击数据行：预收/预付记录 = 打开收付明细（查看为主，编辑走右键）；供应商表 = 编辑
+function onRowDblClick(item, e, handler = openEdit, allowed = canCreate.value) {
   if (e.target.closest('input, button, select, textarea, a')) return
-  if (!canCreate.value) return
+  if (!allowed) return
   handler(item)
 }
 
@@ -781,7 +1068,7 @@ const REC_COPY_COLS = [
   { key: 'counterparty', label: '往来单位' },
   { key: 'short_name', label: '项目' },
   { key: 'delivery_dept', label: '交付部门' },
-  { key: 'occur_date', label: '发生日期' },
+  { key: 'occur_date', label: '款项日期' },
   { key: 'advance_amount', label: '总额', format: v => fmtAmt(v) },
   { key: 'written_off_amount', label: '已核销', format: v => fmtAmt(v) },
   { key: 'balance_amount', label: '余额', format: v => fmtAmt(v) },
@@ -849,6 +1136,9 @@ useModalEsc(
   [() => showSupplierModal.value, () => (showSupplierModal.value = false)],
   [() => showProjList.value, () => (showProjList.value = false)],
   [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
+  [() => showInstAdd.value, () => (showInstAdd.value = false)],
+  [() => showTransfer.value, () => (showTransfer.value = false)],
+  [() => !!migrateWo.value, () => (migrateWo.value = null)],
 )
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
 useModalEnter(() => showModal.value, () => save())
@@ -884,7 +1174,7 @@ onMounted(async () => {
       <div>
         <h1>预收预付</h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，并打通现金流
+          围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，收付自动计入现金流
         </div>
       </div>
     </div>
@@ -902,7 +1192,7 @@ onMounted(async () => {
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
       <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}{{ (filters.start_date || filters.end_date) ? '实际收付' : '金额' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="(filters.start_date || filters.end_date) ? '区间内按分期收付日期统计的实际收付合计（非记录整笔金额）' : ''"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
-      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">{{ rangeActive ? '区间核销' : '已核销' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="rangeActive ? '区间内按核销日期统计的核销合计' : ''"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span v-if="!rangeActive" class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
       <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v"><Amt :v="kpi.overdue_balance" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
@@ -923,6 +1213,11 @@ onMounted(async () => {
             项目：{{ projectFilter.label }} ✕
           </button>
           <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
+          <!-- 视图切换：明细台账 / 按单位聚合（客户或供应商 → 名下项目 两级下钻） -->
+          <div class="view-seg" role="tablist">
+            <button :class="['vs-btn', { on: viewMode === 'detail' }]" @click="switchView('detail')">明细</button>
+            <button :class="['vs-btn', { on: viewMode === 'bycp' }]" @click="switchView('bycp')">按{{ partyLabel }}</button>
+          </div>
           <div class="spacer"></div>
           <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
           <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
@@ -949,20 +1244,68 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
+        <!-- ══ 按单位聚合视图：客户/供应商 → 名下项目 两级下钻 ══ -->
+        <div v-if="viewMode === 'bycp'" class="table-scroll page-scroll">
+          <table class="data-table cp-agg-table">
+            <thead>
+              <tr>
+                <th>{{ partyLabel }}（往来单位）</th>
+                <th class="ctr">笔数</th>
+                <th class="ctr">项目数</th>
+                <th class="amt" :title="cpCashBasis ? '区间内按分期收付日期统计的实际收付合计' : '记录全额合计'">{{ dirLabel }}{{ cpCashBasis ? '实际收付' : '金额' }}</th>
+                <th v-if="show('adv_writeoff')" class="amt">{{ cpCashBasis ? '区间核销' : '已核销' }}</th>
+                <th v-if="show('adv_writeoff') && !isReceive" class="amt">已退款</th>
+                <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
+                <th v-if="show('adv_writeoff')" class="amt">逾期挂账</th>
+                <th class="ctr">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="cpLoading && !cpRows.length"><td colspan="9" class="empty">⏳ 加载中…</td></tr>
+              <tr v-else-if="!cpRows.length"><td colspan="9" class="empty">当前筛选无{{ dirLabel }}记录</td></tr>
+              <template v-for="row in cpRows" :key="row.counterparty">
+                <tr class="cp-row" @click="toggleCpExpand(row.counterparty)">
+                  <td class="cp-name">
+                    <span class="cp-caret">{{ expandedCps.has(row.counterparty) ? '▾' : '▸' }}</span>{{ row.counterparty }}
+                  </td>
+                  <td class="ctr">{{ row.count }}</td>
+                  <td class="ctr">{{ row.project_count }}<span v-if="row.projects.some(p => !p.project_id)" class="loose-tag" title="含未挂项目的散单">+散单</span></td>
+                  <td class="amt num-strong">{{ fmtAmt(row.advance_amount) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(row.written_off) }}</td>
+                  <td v-if="show('adv_writeoff') && !isReceive" class="amt">{{ Number(row.refunded) ? fmtAmt(row.refunded) : '—' }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt num-strong">{{ fmtAmt(row.balance) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt" :class="{ 'txt-warn': Number(row.overdue_balance) > 0 }">{{ Number(row.overdue_balance) ? fmtAmt(row.overdue_balance) : '—' }}</td>
+                  <td class="ctr"><button class="btn btn-ghost btn-sm" @click.stop="drillCp(row)">查看明细</button></td>
+                </tr>
+                <tr v-for="p in (expandedCps.has(row.counterparty) ? row.projects : [])"
+                    :key="row.counterparty + '·' + (p.project_id ?? 'loose')" class="cp-proj-row">
+                  <td class="cp-proj-name">└ {{ p.short_name }}</td>
+                  <td class="ctr">{{ p.count }}</td>
+                  <td class="ctr">—</td>
+                  <td class="amt">{{ fmtAmt(p.advance_amount) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(p.written_off) }}</td>
+                  <td v-if="show('adv_writeoff') && !isReceive" class="amt">{{ Number(p.refunded) ? fmtAmt(p.refunded) : '—' }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(p.balance) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt" :class="{ 'txt-warn': Number(p.overdue_balance) > 0 }">{{ Number(p.overdue_balance) ? fmtAmt(p.overdue_balance) : '—' }}</td>
+                  <td class="ctr"><button class="btn btn-ghost btn-sm" @click.stop="drillProject(row, p)">查看明细</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="viewMode === 'detail'" class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
           <table class="data-table">
             <thead>
               <tr>
                 <th v-if="canDelete" class="sel-col"><input type="checkbox" :checked="pageAll" @change="toggleAll" title="全选本页" /></th>
                 <th v-if="show('adv_counterparty')"><ColumnFilter label="往来单位" field="counterparty" type="text" :model-value="colFilters.counterparty" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('counterparty',v)" @sort="o=>setSort('counterparty',o)" /></th>
-                <th class="proj-dept-th">
-                  <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
-                  <ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" />
-                </th>
-                <th>发生年月</th>
+                <th><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+                <th><ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
+                <th title="合作入驻/业务归属年月，不参与金额统计——金额按分期实际收付日期统计">入驻年月</th>
                 <th><ColumnFilter label="款项日期" field="occur_date" type="date" :model-value="colFilters.occur_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('occur_date',v)" @sort="o=>setSort('occur_date',o)" /></th>
-                <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="`${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
-                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="已核销" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
+                <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="rangeActive ? `${dirLabel}实际收付` : `${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
+                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter :label="rangeActive ? '区间核销' : '已核销'" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="未核销余额" field="balance_amount" type="number" :model-value="colFilters.balance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('balance_amount',v)" @sort="o=>setSort('balance_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
                 <th v-if="show('adv_expected_date')" class="ctr"><ColumnFilter label="挂账账龄" field="expected_writeoff_date" type="date" :model-value="colFilters.expected_writeoff_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('expected_writeoff_date',v)" @sort="o=>setSort('expected_writeoff_date',o)" /></th>
@@ -971,20 +1314,18 @@ onMounted(async () => {
             </thead>
             <tbody>
               <template v-if="loading && !items.length">
-                <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+                <SkeletonRow v-for="n in 8" :key="n" :cols="12" />
               </template>
               <tr v-else-if="loadErr">
-                <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
+                <td colspan="12" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
-              <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <tr v-else-if="!items.length"><td colspan="12" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
-                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event, openInstallments, canCreate || canInstAction)">
                 <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
-                <td>
-                  <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
-                  <div class="dept-tag">{{ r.delivery_dept }}</div>
-                </td>
+                <td><span v-if="r.short_name" class="proj-name">{{ r.short_name }}</span><span v-else>—</span></td>
+                <td>{{ r.delivery_dept }}</td>
                 <td>{{ r.occur_year }}-{{ String(r.occur_month).padStart(2, '0') }}</td>
                 <td>{{ r.occur_date || '—' }}</td>
                 <td v-if="show('adv_amount')" class="amt num-strong">{{ fmtAmt(r.advance_amount) }}</td>
@@ -1016,15 +1357,15 @@ onMounted(async () => {
         <div v-else-if="listSummary" class="adv-sumbar">
           <span class="sb-k">筛选合计</span>
           <span class="sb-i">{{ listSummary.count }} 笔</span>
-          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
-          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}{{ rangeActive ? '实际收付' : '金额' }} <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">{{ rangeActive ? '区间核销' : '已核销' }} <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b><Amt :v="listSummary.refunded" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent"><Amt :v="listSummary.balance" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn"><Amt :v="listSummary.overdue_balance" :fmt="fmtAmt" /></b></span>
           <span class="sb-range">{{ rangeLabel }}</span>
         </div>
 
-        <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
+        <Pager v-if="viewMode === 'detail'" v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
       </div>
     </template>
 
@@ -1154,14 +1495,15 @@ onMounted(async () => {
               <tr>
                 <th>供应商名称</th>
                 <th class="ctr">类型</th>
-                <th>关联项目 / 部门</th>
+                <th>关联项目</th>
+                <th>部门</th>
                 <th>联系人</th>
                 <th class="amt">预付余额</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!supplierLoading && !supplierItems.length">
-                <td colspan="5" class="empty">暂无供应商，点击「新增供应商」添加</td>
+                <td colspan="6" class="empty">暂无供应商，点击「新增供应商」添加</td>
               </tr>
               <tr v-for="s in supplierItems" :key="s.id" @contextmenu.prevent="ctxSup.open($event, s)" @dblclick="onRowDblClick(s, $event, openEditSupplier)">
                 <td><b>{{ s.name }}</b><div v-if="s.notes" class="dept-tag">{{ s.notes }}</div></td>
@@ -1170,10 +1512,8 @@ onMounted(async () => {
                     {{ s.supplier_type === 'private' ? '私有' : '公共' }}
                   </span>
                 </td>
-                <td>
-                  <div v-if="s.project_short_name" class="proj-name">{{ s.project_short_name }}</div>
-                  <div class="dept-tag">{{ s.delivery_dept }}</div>
-                </td>
+                <td><span v-if="s.project_short_name" class="proj-name">{{ s.project_short_name }}</span><span v-else>—</span></td>
+                <td>{{ s.delivery_dept }}</td>
                 <td>{{ s.contact || '—' }}</td>
                 <td class="amt">
                   <span :class="{ 'num-strong': parseFloat(s.prepaid_balance) > 0, 'bal-positive': parseFloat(s.prepaid_balance) > 0 }">
@@ -1219,9 +1559,9 @@ onMounted(async () => {
           </label>
           <label class="fld"><span>{{ partyLabel }}（往来单位） <em>*</em></span>
             <input v-model="form.counterparty" class="inp" :placeholder="`${partyLabel}名称`" /></label>
-          <label class="fld"><span>发生年 <em>*</em></span>
+          <label class="fld"><span>入驻年 <em>*</em></span>
             <select v-model.number="form.occur_year" class="sel"><option v-for="y in years" :key="y" :value="y">{{ y }}</option></select></label>
-          <label class="fld"><span>发生月 <em>*</em></span>
+          <label class="fld"><span>入驻月 <em>*</em></span>
             <select v-model.number="form.occur_month" class="sel"><option v-for="m in months" :key="m" :value="m">{{ m }}</option></select></label>
           <label class="fld"><span>款项日期</span><input v-model="form.occur_date" type="date" class="inp" /></label>
           <label class="fld"><span>{{ dirLabel }}金额（元）</span><input v-model="form.advance_amount" type="number" step="0.01" class="inp" /></label>
@@ -1238,13 +1578,14 @@ onMounted(async () => {
 
     <!-- ── writeoff modal ── -->
     <div v-if="showWoModal" class="modal-mask" @click.self="showWoModal = false">
-      <div class="modal">
+      <div class="modal inst-modal">
         <h3>核销 · {{ woRec.counterparty }}</h3>
         <div class="wo-summary">
           <span>{{ dirLabel }}金额 <b>{{ fmtAmt(woRec.advance_amount) }}</b></span>
           <span>已核销 <b>{{ fmtAmt(woRec.written_off_amount) }}</b></span>
           <span class="hl">未核销余额 <b>{{ fmtAmt(woRec.balance_amount) }}</b></span>
         </div>
+        <div class="inst-scroll">
         <table class="data-table compact">
           <thead>
             <tr>
@@ -1260,14 +1601,19 @@ onMounted(async () => {
               <td>{{ w.writeoff_date }}</td>
               <td>
                 <span v-if="w.ar_record_id" class="offset-badge" :title="`已生成预收抵扣回款 · ${w.ar_project_no || ''}`">↳ 转回款</span>
-                <span v-else-if="w.payment_id" class="offset-badge pay-badge" :title="`关联排款: ${w.payment_payee || ''}`">↳ 排款#{{ w.payment_id }}</span>
+                <span v-else-if="w.payment_id" class="offset-badge pay-badge" :title="`关联排款: ${w.payment_payee || ''}`">↳ 抵排款</span>
                 <span v-else>—</span>
               </td>
               <td>{{ w.notes || '—' }}</td>
-              <td v-if="canDelete || canWoAction"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
+              <td v-if="canDelete || canWoAction">
+                <button v-if="!w.ar_record_id && !w.payment_id && (canCreate || canTransferAction)"
+                        class="lnk" title="核销登记至错误记录时，将其转至另一条同方向记录" @click="openMigrate(w)">迁移</button>
+                <button class="lnk danger" @click="delWriteoff(w)">删除</button>
+              </td>
             </tr>
           </tbody>
         </table>
+        </div>
         <div v-if="canCreate || canWoAction" class="wo-add">
           <div v-if="canOffset" class="wo-offset-row">
             <span class="wo-offset-lbl">冲抵应收：</span>
@@ -1293,44 +1639,189 @@ onMounted(async () => {
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
         </div>
+
+        <!-- 核销迁移：选择目标记录 -->
+        <div v-if="migrateWo" class="inst-add-mask" @click.self="migrateWo = null">
+          <div class="inst-add-card tr-card">
+            <h4>迁移核销<span class="ia-sub">第{{ migrateWo.writeoff_no }}笔 · {{ fmtAmt(migrateWo.amount) }}</span></h4>
+            <div class="ia-fld">
+              <span>迁移到（同方向、余额须足以承接）</span>
+              <input v-model="migrateKw" class="inp" placeholder="搜索往来单位 / 项目…" @input="onMigrateKw" />
+              <div v-if="migrateOpts.length" class="tr-opts">
+                <div v-for="r in migrateOpts" :key="r.id" class="tr-opt" @click="doMigrate(r)">
+                  <b>{{ r.counterparty || '—' }}</b><span v-if="r.short_name">·{{ r.short_name }}</span>
+                  <i>{{ r.delivery_dept }}</i><em>余额 {{ fmtAmt(r.balance_amount) }}</em>
+                </div>
+              </div>
+            </div>
+            <p class="ia-hint">仅纯登记核销可迁移；已关联预收抵扣回款/排款的须先撤销关联</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="migrateWo = null">取消</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- ── installment modal（收付明细：一条记录多次到账/付出）── -->
     <div v-if="showInstModal" class="modal-mask" @click.self="showInstModal = false">
-      <div class="modal">
-        <h3>收付明细 · {{ instRec.counterparty }}</h3>
+      <div class="modal inst-modal">
+        <div class="inst-head">
+          <h3>收付明细 · {{ instRec.counterparty }}</h3>
+          <div class="inst-head-btns">
+            <button v-if="instSel.size" class="btn btn-primary btn-sm" @click="migrateSelected">⇄ 迁移选中（{{ instSel.size }} 笔）</button>
+            <button v-if="canCreate || canTransferAction" class="btn btn-ghost btn-sm"
+                    title="往来单位间/项目间权益转移（非现金，不产生收付流水）" @click="openTransfer">⇄ 转移</button>
+            <button v-if="canCreate || canInstAction" class="btn btn-primary btn-sm" @click="openInstAdd">＋ 新增{{ dirLabel }}</button>
+          </div>
+        </div>
         <div class="wo-summary">
           <span>{{ dirLabel }}总额 <b>{{ fmtAmt(instRec.advance_amount) }}</b><i style="font-style:normal;font-size:11px;color:var(--muted)">（=明细之和）</i></span>
           <span>已核销 <b>{{ fmtAmt(instRec.written_off_amount) }}</b></span>
           <span class="hl">未核销余额 <b>{{ fmtAmt(instRec.balance_amount) }}</b></span>
+          <span v-if="parseFloat(instRec.transferred_in_amount)" class="tr-chip tr-chip-in">转入 {{ fmtAmt(instRec.transferred_in_amount) }}</span>
+          <span v-if="parseFloat(instRec.transferred_out_amount)" class="tr-chip tr-chip-out">转出 {{ fmtAmt(instRec.transferred_out_amount) }}</span>
         </div>
-        <table class="data-table compact">
-          <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
-          <tbody>
-            <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细</td></tr>
-            <tr v-for="i in instList" :key="i.id">
-              <td>{{ i.install_no }}</td>
-              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
-              <td>{{ i.occur_date }}</td>
-              <td>{{ i.notes || '—' }}</td>
-              <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="canCreate || canInstAction" class="wo-add">
-          <div class="wo-inputs">
-            <input v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="收付金额(元，可负=退回)" />
-            <input v-model="instForm.occur_date" type="date" class="inp" />
-            <input v-model="instForm.notes" class="inp" placeholder="备注（如：第二笔预付款）" />
-            <button class="btn btn-primary btn-sm" :disabled="instBusy" @click="addInstallment">{{ instBusy ? '…' : `＋ 新增${dirLabel}` }}</button>
+        <div ref="instListBody" class="inst-scroll">
+          <table class="data-table compact">
+            <thead><tr>
+              <th v-if="canCreate || canTransferAction" class="sel-th"><input type="checkbox" title="全选（批量迁移）"
+                  :checked="instList.length > 0 && instSel.size === instList.length" @change="toggleInstSelAll" /></th>
+              <th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
+            <tbody>
+              <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 6 : 5" class="empty">暂无收付明细——点右上角「＋ 新增{{ dirLabel }}」登记第一笔</td></tr>
+              <tr v-for="i in instList" :key="i.id" :class="{ 'row-flash': i.id === lastInstId, 'row-sel': instSel.has(i.id) }">
+                <td v-if="canCreate || canTransferAction" class="sel-th"><input type="checkbox" :checked="instSel.has(i.id)" @change="toggleInstSel(i.id)" /></td>
+                <td>{{ i.install_no }}</td>
+                <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
+                <td>{{ i.occur_date }}</td>
+                <td>{{ i.notes || '—' }}</td>
+                <td v-if="canCreate || canInstAction">
+                  <button v-if="canCreate || canTransferAction" class="lnk" title="该笔收付登记至错误的往来单位/项目时，整笔转至目标记录（收付流水随之调整）" @click="openInstMigrate(i)">迁移</button>
+                  <button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="transferList.tout.length || transferList.tin.length" class="tr-sec">
+          <div class="tr-sec-head">转移记录<i>仅调整款项归属，不构成收付，不计入收付流水</i></div>
+          <div v-for="t in transferList.tout" :key="'o' + t.id" class="tr-item">
+            <span class="tr-kind" :class="{ cash: t.kind === 'cash_lines' }">{{ t.kind === 'cash_lines' ? '整笔' : '权益' }}</span>
+            <b class="tr-amt-out">−{{ fmtAmt(t.amount) }}</b>
+            <span>→ {{ t.to.counterparty || '—' }}<template v-if="t.to.short_name">·{{ t.to.short_name }}</template><template v-if="t.to.delivery_dept !== instRec.delivery_dept">（{{ t.to.delivery_dept }}）</template></span>
+            <em>{{ t.transfer_date }}</em>
+            <span class="tr-reason" :title="t.reason">{{ t.reason }}</span>
+            <button v-if="canCreate || canTransferAction" class="lnk danger" @click="undoTransfer(t)">撤销</button>
           </div>
-          <p style="font-size:11px;color:var(--muted);margin:6px 0 0">
-            与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
-          </p>
+          <div v-for="t in transferList.tin" :key="'i' + t.id" class="tr-item">
+            <span class="tr-kind" :class="{ cash: t.kind === 'cash_lines' }">{{ t.kind === 'cash_lines' ? '整笔' : '权益' }}</span>
+            <b class="tr-amt-in">+{{ fmtAmt(t.amount) }}</b>
+            <span>← {{ t.from.counterparty || '—' }}<template v-if="t.from.short_name">·{{ t.from.short_name }}</template><template v-if="t.from.delivery_dept !== instRec.delivery_dept">（{{ t.from.delivery_dept }}）</template></span>
+            <em>{{ t.transfer_date }}</em>
+            <span class="tr-reason" :title="t.reason">{{ t.reason }}</span>
+            <button v-if="canCreate || canTransferAction" class="lnk danger" @click="undoTransfer(t)">撤销</button>
+          </div>
         </div>
+        <p class="inst-note">
+          与应收的多次回款一致：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额按明细自动汇总；删除某笔后总额相应减少——若减少后低于已核销金额将无法删除，请先删除对应核销。
+        </p>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showInstModal = false">关闭</button>
+        </div>
+
+        <!-- 转移卡片：固定居中浮层，Esc 关闭 -->
+        <div v-if="showTransfer" class="inst-add-mask" @click.self="() => { if (!transferForm.amount && !transferForm.reason) showTransfer = false }">
+          <div class="inst-add-card tr-card">
+            <h4 v-if="migInsts.length === 1">⇄ 整笔迁移<span class="ia-sub">第{{ migInsts[0].install_no }}笔 {{ fmtAmt(migInsts[0].amount) }} · {{ migInsts[0].occur_date }}</span></h4>
+            <h4 v-else-if="migInsts.length">⇄ 批量迁移<span class="ia-sub">{{ migInsts.length }} 笔 · 合计 {{ fmtAmt(migAmt) }}</span></h4>
+            <h4 v-else>⇄ 转移{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 余额 {{ fmtAmt(instRec.balance_amount) }}</span></h4>
+            <div v-if="migInsts.length" class="mig-info">收付日期与金额原样转至目标记录，收付口径同步更正（区别于仅调整归属的权益转移）</div>
+            <label v-if="!migInsts.length" class="ia-fld">
+              <span>转移金额 <em>*</em>
+                <button type="button" class="wo-fill-chip" style="margin-left:6px"
+                        @click="transferForm.amount = Number(instRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(instRec.balance_amount) }}</button>
+              </span>
+              <input ref="transferAmtInput" v-model="transferForm.amount" type="number" step="0.01" class="inp" placeholder="≤ 未核销余额" />
+            </label>
+            <div v-if="migInsts.length" class="ia-fld">
+              <span>核销随迁</span>
+              <div class="tr-mode">
+                <label :class="{ active: migCarry === 'auto' }"><input v-model="migCarry" type="radio" value="auto" />自动同步（推荐）</label>
+                <label :class="{ active: migCarry === 'none' }"><input v-model="migCarry" type="radio" value="none" />仅迁收付</label>
+              </div>
+              <div class="mig-preview" :class="{ bad: migSrcAfter < 0 }">
+                <template v-if="migCarry === 'auto'">自动随迁核销 {{ fmtAmt(migCarryAmt) }} · </template>迁移后源余额：{{ fmtAmt(migSrcAfter) }}<template v-if="migSrcAfter < 0">（为负：未关联回款/排款的核销不足以随迁，请先撤销已关联的核销）</template>
+              </div>
+            </div>
+            <label class="ia-fld">
+              <span>转移日期 <em>*</em></span>
+              <input v-model="transferForm.date" type="date" class="inp" />
+            </label>
+            <label class="ia-fld">
+              <span>转移原因 <em>*</em></span>
+              <input v-model="transferForm.reason" class="inp" maxlength="200" placeholder="如：合同主体变更 / 预收落位到项目" />
+            </label>
+            <div class="ia-fld">
+              <span>转移到 <em>*</em></span>
+              <div class="tr-mode">
+                <label :class="{ active: transferForm.mode === 'existing' }"><input v-model="transferForm.mode" type="radio" value="existing" />已有记录</label>
+                <label :class="{ active: transferForm.mode === 'new' }"><input v-model="transferForm.mode" type="radio" value="new" />新建记录</label>
+              </div>
+              <template v-if="transferForm.mode === 'existing'">
+                <div v-if="transferForm.target_label" class="tr-picked">{{ transferForm.target_label }}
+                  <button type="button" class="lnk" @click="transferForm.to_advance_id = ''; transferForm.target_label = ''; searchTargets('')">重选</button></div>
+                <template v-else>
+                  <input v-model="transferForm.target_kw" class="inp" placeholder="搜索往来单位 / 项目…" @input="onTargetKw" />
+                  <div v-if="targetOpts.length" class="tr-opts">
+                    <div v-for="r in targetOpts" :key="r.id" class="tr-opt" @click="pickTarget(r)">
+                      <b>{{ r.counterparty || '—' }}</b><span v-if="r.short_name">·{{ r.short_name }}</span>
+                      <i>{{ r.delivery_dept }}</i><em>余额 {{ fmtAmt(r.balance_amount) }}</em>
+                    </div>
+                  </div>
+                </template>
+              </template>
+              <template v-else>
+                <input v-model="transferForm.new_counterparty" class="inp" style="margin-bottom:6px" placeholder="目标往来单位（必填）" />
+                <input v-model="transferForm.new_project_kw" class="inp" placeholder="关联项目（选填，搜索项目简称）" @input="onTargetProjKw" />
+                <div v-if="targetProjOpts.length && !transferForm.new_project_id" class="tr-opts">
+                  <div v-for="pr in targetProjOpts" :key="pr.id" class="tr-opt" @click="pickTargetProject(pr)">
+                    <b>{{ pr.short_name }}</b><i>{{ pr.delivery_dept }}</i><span>{{ pr.customer_name }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <p class="ia-hint">{{ migInsts.length ? '整笔迁移：该笔收付连同其已核销部分一并转到目标单位/项目，收付日期与账龄不变；可整单撤销' : '权益转移：仅调整款项归属，不产生收付流水，账龄承袭原记录' }}；跨事业部仅超级管理员</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="showTransfer = false">取消</button>
+              <button class="btn btn-primary btn-sm" :disabled="transferBusy" @click="submitTransfer">{{ transferBusy ? '…' : (migInsts.length ? '确认迁移' : '确认转移') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 新增收付卡片：固定居中浮层，Esc 关卡片、Enter 保存 -->
+        <div v-if="showInstAdd" class="inst-add-mask" @click.self="instAddMaskClick">
+          <div class="inst-add-card" @keydown.enter.prevent="saveInstAdd(false)">
+            <h4>新增{{ dirLabel }}<span class="ia-sub">{{ instRec.counterparty }} · 第 {{ instList.length + 1 }} 笔</span></h4>
+            <label class="ia-fld">
+              <span>收付金额 <em>*</em></span>
+              <input ref="instAmtInput" v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="金额（元），退回填负数" />
+            </label>
+            <label class="ia-fld">
+              <span>收付日期 <em>*</em></span>
+              <input v-model="instForm.occur_date" type="date" class="inp" />
+            </label>
+            <label class="ia-fld">
+              <span>备注</span>
+              <input v-model="instForm.notes" class="inp" placeholder="如：第二笔预付款" />
+            </label>
+            <p class="ia-hint">Enter 保存 · Esc 取消 · 总额与未核销余额自动更新</p>
+            <div class="ia-foot">
+              <button class="btn btn-ghost btn-sm" @click="showInstAdd = false">取消</button>
+              <button class="btn btn-ghost btn-sm" :disabled="instBusy" @click="saveInstAdd(true)">保存并继续</button>
+              <button class="btn btn-primary btn-sm" :disabled="instBusy" @click="saveInstAdd(false)">{{ instBusy ? '…' : '保存' }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1479,6 +1970,20 @@ onMounted(async () => {
 .proj-chip:hover { background: rgba(var(--primary-rgb,255,138,76),0.18); }
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
 .filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }
+/* 视图切换：明细 / 按单位聚合 */
+.view-seg { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 8px; padding: 3px; flex-shrink: 0; }
+.vs-btn { border: none; background: none; padding: 4px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); cursor: pointer; font-family: inherit; white-space: nowrap; transition: all .15s; }
+.vs-btn.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
+/* 按单位聚合表 */
+.cp-agg-table .cp-row { cursor: pointer; }
+.cp-agg-table .cp-row:hover td { background: rgba(201,99,66,.05); }
+.cp-name { font-weight: 650; }
+.cp-caret { display: inline-block; width: 16px; color: var(--muted); }
+.cp-proj-row td { background: rgba(160,120,80,.04); font-size: 12.5px; }
+.cp-proj-name { padding-left: 26px; color: var(--muted); }
+.loose-tag { margin-left: 4px; font-size: 10.5px; color: var(--c-warn); background: var(--c-warn-bg, rgba(245,166,35,.12)); border-radius: 4px; padding: 0 5px; }
+.txt-warn { color: var(--c-warn); }
 .sel.sm { padding: 5px 8px; font-size: 12.5px; }
 .inp.sm { padding: 5px 9px; font-size: 12.5px; width: 240px; max-width: 100%; }
 .btn.disabled { opacity: .6; pointer-events: none; }
@@ -1496,7 +2001,6 @@ onMounted(async () => {
 /* 列头漏斗按钮 / 弹层定位锚点不被单元格裁切 */
 .data-table thead th { overflow: visible; }
 /* 项目简称 + 部门 两个列头筛选并排 */
-.proj-dept-th { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .global-search { width: 360px; min-width: 160px; flex: 1 1 300px; max-width: 100%; flex: 0 1 360px; }
 .filter-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .data-table th.amt, .data-table td.amt { text-align: right; }
@@ -1564,6 +2068,76 @@ onMounted(async () => {
 .wo-offset-sel { flex: 1; min-width: 220px; }
 .wo-offset-tip { font-size: 11px; color: var(--primary); opacity: 0.8; width: 100%; padding-left: 2px; }
 .wo-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* ── 收付/核销明细弹窗：固定高度、列表内滚（长列表不再撑开整个弹窗）── */
+.inst-modal { display: flex; flex-direction: column; max-height: 80vh; overflow: hidden; position: relative; }
+.inst-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.inst-head h3 { margin: 0 0 12px; }
+.inst-head .btn { flex-shrink: 0; margin-bottom: 8px; }
+.inst-scroll { flex: 1; min-height: 80px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.inst-scroll .data-table { margin: 0; }
+.inst-scroll thead th { position: sticky; top: 0; background: #f6efe7; z-index: 1; box-shadow: 0 1px 0 var(--border); }
+.inst-note { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+.row-flash td { animation: inst-flash 1.6s ease; }
+@keyframes inst-flash { 0% { background: rgba(201,99,66,0.20); } 100% { background: transparent; } }
+
+/* 新增收付卡片：固定居中浮层（覆盖整屏，不随列表滚动） */
+.inst-add-mask {
+  position: fixed; inset: 0; z-index: 320;
+  background: rgba(20,10,5,0.28); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.inst-add-card {
+  width: 360px; max-width: 92vw;
+  background: rgba(255,252,248,0.99);
+  border: 1px solid var(--glass-border); border-radius: 16px;
+  padding: 18px 20px 16px;
+  box-shadow: 0 18px 60px rgba(100,60,30,0.32), 0 1px 0 rgba(255,255,255,0.85) inset;
+  animation: ia-pop .16s ease;
+}
+@keyframes ia-pop { from { transform: scale(.96) translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+.inst-add-card h4 { margin: 0 0 14px; font-size: 15px; display: flex; align-items: baseline; gap: 8px; }
+.ia-sub { font-size: 11.5px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ia-fld { display: block; margin-bottom: 10px; }
+.ia-fld > span { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.ia-fld > span em { color: var(--c-danger); font-style: normal; }
+.ia-fld .inp { width: 100%; }
+.ia-hint { font-size: 11px; color: var(--muted); margin: 2px 0 12px; }
+.ia-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ── 转移 ── */
+.inst-head-btns { display: flex; gap: 8px; flex-shrink: 0; margin-bottom: 8px; }
+.tr-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 700; }
+.tr-chip-in { background: rgba(27,110,53,0.1); color: #1b6e35; }
+.tr-chip-out { background: rgba(198,40,40,0.08); color: #c62828; }
+.tr-sec { margin-top: 10px; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px; max-height: 150px; overflow-y: auto; }
+.tr-sec-head { font-size: 11.5px; font-weight: 700; color: var(--muted); margin-bottom: 5px; }
+.tr-sec-head i { font-style: normal; font-weight: 400; font-size: 10.5px; margin-left: 8px; }
+.tr-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.tr-amt-out { color: #c62828; font-weight: 800; }
+.tr-amt-in { color: #1b6e35; font-weight: 800; }
+.tr-item em { font-style: normal; font-size: 11px; color: var(--muted); }
+.tr-reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.tr-card { width: 420px; }
+.tr-mode { display: flex; gap: 8px; margin-bottom: 8px; }
+.tr-mode label { display: flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 12px; border: 1.5px solid var(--border); border-radius: 8px; cursor: pointer; }
+.tr-mode label.active { border-color: var(--primary); color: var(--primary); font-weight: 700; background: rgba(201,99,66,0.05); }
+.tr-opts { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; max-height: 170px; overflow-y: auto; }
+.tr-opt { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.tr-opt:hover { background: rgba(201,99,66,0.06); }
+.tr-opt b { font-weight: 700; }
+.tr-opt i { font-style: normal; font-size: 11px; color: var(--muted); }
+.tr-opt em { font-style: normal; font-size: 11px; color: var(--primary); margin-left: auto; white-space: nowrap; }
+.tr-picked { font-size: 12.5px; font-weight: 600; padding: 6px 10px; background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.25); border-radius: 8px; display: flex; align-items: center; gap: 8px; }
+.tr-kind { font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 6px; background: rgba(120,120,120,0.12); color: var(--muted); flex-shrink: 0; }
+.tr-kind.cash { background: rgba(21,101,192,0.12); color: var(--c-info); }
+.mig-info { font-size: 11.5px; color: var(--c-info); background: rgba(21,101,192,0.06); border: 1px solid rgba(21,101,192,0.18); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+.mig-wo { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 3px 0; cursor: pointer; }
+.mig-wo em { font-style: normal; font-size: 11px; color: var(--muted); }
+.mig-preview { margin-top: 6px; font-size: 12px; font-weight: 700; color: #1b6e35; }
+.inst-scroll .sel-th { width: 30px; text-align: center; }
+.inst-scroll tr.row-sel td { background: rgba(201,99,66,0.06); }
+.mig-preview.bad { color: var(--c-danger); }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 

@@ -18,6 +18,7 @@ urlpatterns = [
     path('customers', views.customers),
     path('customers/bulk-delete', views.customers_bulk_delete),
     path('customers/bulk-tag-level', views.customers_bulk_tag_level),
+    path('customers/bulk-set-status', views.customers_bulk_set_status),
     path('customers/sync-from-projects', views.customers_sync_from_projects),
     path('customers/<int:pk>', views.customer_detail),
 
@@ -59,6 +60,8 @@ urlpatterns = [
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
     path('records/<int:pk>/adjustments', views.ar_adjustments),
     path('records/<int:pk>/adjustments/<int:aid>', views.ar_adjustment_detail),
+    path('records/<int:pk>/invoices', views.ar_invoice_entries),
+    path('records/<int:pk>/invoices/<int:eid>', views.ar_invoice_entry_detail),
 
     # 账龄分桶边界配置
     path('aging-config', views.ar_aging_config),
@@ -78,6 +81,7 @@ urlpatterns = [
     path('advances/bulk-delete', views.advances_bulk_delete),
     path('advances/kpi', views.advances_kpi),
     path('advances/summary', views.advances_summary),
+    path('advances/by-counterparty', views.advances_by_counterparty),
     path('advances/available', views.advances_available),
     path('advances/offsettable', views.advance_offsettable_records),
     path('advances/template', views.advance_template),
@@ -94,6 +98,10 @@ urlpatterns = [
     path('advances/<int:pk>/installments/<int:iid>', views.advance_installment_detail),
     path('advances/<int:pk>/writeoffs', views.advance_writeoffs),
     path('advances/<int:pk>/writeoffs/<int:wid>', views.advance_writeoff_detail),
+    path('advances/<int:pk>/writeoffs/<int:wid>/migrate', views.advance_writeoff_migrate),
+    path('advances/<int:pk>/installments/migrate', views.advance_installments_migrate),
+    path('advances/<int:pk>/transfers', views.advance_transfers),
+    path('advances/<int:pk>/transfers/<int:tid>', views.advance_transfer_detail),
 
     # Analytics
     path('analytics/aging', views.analytics_aging),

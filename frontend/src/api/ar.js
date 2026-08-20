@@ -83,6 +83,9 @@ const ar = {
   listAdjustments: id => api.get(`/ar/records/${id}/adjustments`),
   addAdjustment: (id, d) => api.post(`/ar/records/${id}/adjustments`, d),
   deleteAdjustment: (rid, aid) => api.delete(`/ar/records/${rid}/adjustments/${aid}`),
+  listInvoiceEntries: id => api.get(`/ar/records/${id}/invoices`),
+  addInvoiceEntry: (id, d) => api.post(`/ar/records/${id}/invoices`, d),
+  deleteInvoiceEntry: (rid, eid) => api.delete(`/ar/records/${rid}/invoices/${eid}`),
 
   // Payments
   listPayments: id => api.get(`/ar/records/${id}/payments`),
@@ -97,6 +100,7 @@ const ar = {
   updateCustomer: (id, d) => api.put(`/ar/customers/${id}`, d),
   deleteCustomer: id => api.delete(`/ar/customers/${id}`),
   bulkTagCustomerLevel: d => api.post('/ar/customers/bulk-tag-level', d),
+  bulkSetCustomerStatus: d => api.post('/ar/customers/bulk-set-status', d),
   bulkDeleteCustomers: d => api.post('/ar/customers/bulk-delete', d),
   syncCustomersFromProjects: () => api.post('/ar/customers/sync-from-projects', {}),
 
@@ -121,8 +125,14 @@ const ar = {
 
   // 预收预付 (advances)
   listAdvances: p => api.get('/ar/advances', { params: p }),
+  listAdvTransfers: id => api.get(`/ar/advances/${id}/transfers`),
+  addAdvTransfer: (id, d) => api.post(`/ar/advances/${id}/transfers`, d),
+  deleteAdvTransfer: (id, tid) => api.delete(`/ar/advances/${id}/transfers/${tid}`),
+  migrateAdvWriteoff: (id, wid, d) => api.post(`/ar/advances/${id}/writeoffs/${wid}/migrate`, d),
+  migrateAdvInstallments: (id, d) => api.post(`/ar/advances/${id}/installments/migrate`, d),
   advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),
   advancesSummary: p => api.get('/ar/advances/summary', { params: p }),
+  advancesByCounterparty: p => api.get('/ar/advances/by-counterparty', { params: p }),
   advancesAvailable: p => api.get('/ar/advances/available', { params: p }),
   // 预收核销工作台 + 批量核销（一笔预收按先进先出冲抵多条应收）
   offsetWorkbench: p => api.get('/ar/advances/offset-workbench', { params: p }),

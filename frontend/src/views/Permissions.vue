@@ -183,12 +183,12 @@ async function save() {
         <div class="section-title" style="margin-top:20px">记录操作权限</div>
         <div class="chip-row">
           <label class="perm-chip" :class="{ on: current.config.can_create }"
-                 title="勾选=可新增/编辑付款管理（同时也放开应收写入）">
+                 title="勾选后可新增、编辑付款管理数据，并同时获得应收数据的编辑权限">
             <input type="checkbox" v-model="current.config.can_create" />
-            <span class="dot"></span>可新增排款（含应收写入）
+            <span class="dot"></span>可新增排款（含编辑应收）
           </label>
           <label class="perm-chip" :class="{ on: current.config.ar_can_create }"
-                 title="勾选=可编辑应收（项目/客户/应收账款），但不放开付款管理写入；结算会计典型用法">
+                 title="勾选后可编辑应收数据（项目、客户、应收账款），不包含付款管理的编辑权限；适用于结算会计岗位">
             <input type="checkbox" v-model="current.config.ar_can_create" />
             <span class="dot"></span>可编辑应收（不含付款）
           </label>
@@ -206,7 +206,7 @@ async function save() {
         <!-- 操作权限：与"能否新增记录"解耦的细粒度动作开关（出纳核销等场景） -->
         <div class="section-title" style="margin-top:20px">操作权限（独立于新增/删除，可单独开通）</div>
         <div style="font-size:12px;color:var(--muted);margin:-4px 0 8px">
-          典型用法：出纳无需「可新增排款」也能单独开通「预付核销」「回款录入」；动作开了才显示对应按钮。
+          典型用法：出纳无需开通「可新增排款」，即可单独授予「预付核销」「回款录入」；授予后，相应按钮才会在业务页面显示。
         </div>
         <div class="chip-row">
           <label v-for="a in actionDefs" :key="a.key" class="perm-chip"

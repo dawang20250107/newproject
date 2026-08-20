@@ -1063,6 +1063,86 @@ class PartialScheduleTests(TestCase):
                              content_type='application/json', **self.auth())
         self.assertEqual(r4.status_code, 200, r4.content)
 
+    def test_close_schedule_archives_and_excludes_remaining(self):
+        """关闭剩余排款：剩余不再执行 → 归档、剩余按0、默认列表隐藏（closed=only 可查）。"""
+        self._sched('4000', '2026-07-01')          # 已排 4000 / 申请 10000
+        # 结案须填原因
+        r0 = self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
+                              data=json.dumps({}), content_type='application/json', **self.auth())
+        self.assertEqual(r0.status_code, 400, r0.content)
+        r = self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
+                             data=json.dumps({'reason': '按实际发生额结算'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertTrue(d['schedule_closed'])
+        self.assertEqual(d['remaining_amount'], '0')          # 剩余归零口径
+        self.assertEqual(d['unscheduled_amount'], '6000.00')  # 真实未排额仍可见
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.archived)                    # 归档
+        self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))   # 已排不动
+        # 默认列表不含已关闭记录（记录多了不堆积）；closed=only 可单独调出查看/撤销
+        lst = self.client.get('/api/pk/approvals', **self.auth()).json()['data']
+        self.assertNotIn(self.rec.id, [r['id'] for r in lst['items']])
+        only = self.client.get('/api/pk/approvals?closed=only', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in only['items']])
+        self.assertEqual(Decimal(only['total_remaining']), Decimal('0'))   # 剩余按0
+        self.assertEqual(Decimal(only['total_scheduled']), Decimal('4000'))
+        inc = self.client.get('/api/pk/approvals?closed=include', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in inc['items']])
+        # 关闭后不可再排款
+        self.assertEqual(self._sched('1000', '2026-08-01').status_code, 409)
+        pay = Payment.objects.get(approval=self.rec)
+        ap = self.client.post(f'/api/pk/payments/{pay.id}/plan-items',
+                              data=json.dumps({'planned_date': '2026-08-01', 'amount': '1000'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(ap.status_code, 409, ap.content)
+        # 撤销关闭 → 归档回退、回到默认列表、可继续排款
+        ru = self.client.delete(f'/api/pk/approvals/{self.rec.id}/close-schedule', **self.auth())
+        self.assertEqual(ru.status_code, 200, ru.content)
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.schedule_closed)
+        self.assertFalse(self.rec.archived)
+        back = self.client.get('/api/pk/approvals', **self.auth()).json()['data']
+        self.assertIn(self.rec.id, [r['id'] for r in back['items']])
+        self.assertEqual(self._sched('1000', '2026-08-01').status_code, 200)
+
+    def test_close_schedule_guards(self):
+        """关闭守卫：排满无需关闭；重复关闭/未关闭撤销均 409；终态审批不可关闭。"""
+        self._sched('10000', '2026-07-01')         # 排满 → archived
+        r = self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
+                             data=json.dumps({'reason': 'x'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 409, r.content)
+        # 未结案时撤销 → 409
+        self.assertEqual(self.client.delete(
+            f'/api/pk/approvals/{self.rec.id}/close-schedule', **self.auth()).status_code, 409)
+        # 已撤销状态的审批不可结案
+        rec2 = ApprovalRecord.objects.create(
+            applicant='李四', department=self.dept, approval_number='2' * 21,
+            summary='作废件', amount=Decimal('500'), payee='供应商B',
+            status='canceled', archived=True)
+        r2 = self.client.post(f'/api/pk/approvals/{rec2.id}/close-schedule',
+                              data=json.dumps({'reason': 'x'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 409, r2.content)
+
+    def test_close_survives_plan_item_reconcile(self):
+        """关闭后调整已排批次（改额/撤批）触发对账，不得把关闭态冲掉。"""
+        self._sched('4000', '2026-07-01')
+        self._sched('1000', '2026-07-15')
+        self.client.post(f'/api/pk/approvals/{self.rec.id}/close-schedule',
+                         data=json.dumps({'reason': '业务取消'}),
+                         content_type='application/json', **self.auth())
+        pay = Payment.objects.get(approval=self.rec)
+        item = pay.plan_items.order_by('seq').last()
+        r = self.client.delete(f'/api/pk/payments/{pay.id}/plan-items/{item.id}', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.rec.refresh_from_db()
+        self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))   # 已排随批次回退
+        self.assertTrue(self.rec.schedule_closed)
+        self.assertTrue(self.rec.archived)                             # 关闭态不被对账冲掉
+
     def test_approval_bulk_delete_paid_payment_super_admin_only(self):
         """策略B补全:审批批量强删连带排款时,排款已有实付分期须仅超管可强删。"""
         self._sched('4000', '2026-07-01')
@@ -1148,7 +1228,9 @@ class PartialScheduleTests(TestCase):
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.archived)
         resp = self._sched('1', '2026-08-01')
-        self.assertEqual(resp.status_code, 404)   # archived=False 过滤不到
+        # 409 冲突而非 404：查得到才能给「已归档」这类可操作提示（不再报记录不存在）
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('归档', resp.json()['error'])
 
     def test_export_has_schedule_columns(self):
         self._sched('4000', '2026-07-01')

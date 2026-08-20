@@ -505,6 +505,11 @@ function toggleColVis(key) {
 }
 // 覆盖原 show()：同时考虑权限和用户隐藏
 const showCol = k => auth.canArView(k) && !hiddenCols.value.has(k)
+// 税额列：开票跟踪是税额的业务主场，恒显（仅受字段权限门控）；
+// 其余 tab 沿用列偏好——全部明细维持「默认隐藏税额去杂」的既有约定，手动打开仍持久生效
+const showTax = computed(() =>
+  auth.canArView('r_tax_amount') &&
+  (activeTab.value === 'invoice' || !hiddenCols.value.has('r_tax_amount')))
 
 // ── 批量分配催收人 ────────────────────────────────────────────────────────────
 const showCollectorAssign = ref(false)
@@ -702,13 +707,14 @@ const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-  adjustment_reason: '',
+  adjustment_reason: '', adjustment_date: '',
   target_collection_date: '', invoice_batch_no: '', notes: '',
 })
 
 // ── 差额调整明细（编辑态管理器）─────────────────────────────────────────────
 // 一条应收可多次调整，各带原因与金额；合计与未收由后端派生，前端只管明细。
 const adjList = ref([])
+const adjListEl = ref(null)   // 管理器列表容器：新增后滚到新行
 const adjForm = reactive({ amount: '', reason: '', date: todayCST() })
 const adjBusy = ref(false)
 const adjTotal = computed(() =>
@@ -752,6 +758,7 @@ async function addAdjustment() {
       { amount: adjForm.amount, reason: adjForm.reason, adjust_date: adjForm.date })
     adjList.value = res.data.items
     adjForm.amount = ''; adjForm.reason = ''; adjForm.date = todayCST()
+    nextTick(() => adjListEl.value?.scrollTo({ top: adjListEl.value.scrollHeight }))
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
@@ -765,6 +772,46 @@ async function removeAdjustment(a) {
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
+}
+
+// ── 开票明细（编辑态管理器）：一条应收可多次开票，各带金额/税额/日期 ────────────
+// 主表 实际开票额/税额/开票日期 为派生（Σ明细 / 首开日 / 差额Σ手填·全额自动）。
+const invList = ref([])
+const invListEl = ref(null)
+const invForm = reactive({ amount: '', tax: '', date: todayCST() })
+const invBusy = ref(false)
+const invTotal = computed(() =>
+  invList.value.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0))
+function _syncInvDerived(d) {
+  // 后端返回派生后的主表开票口径 → 同步 recForm（保存 PUT 回传原值需与库一致）与行内
+  recForm.actual_invoice_amount = d.actual_invoice_amount ?? ''
+  recForm.tax_amount = d.tax_amount ?? ''
+  recForm.invoice_date = d.invoice_date ?? ''
+  invList.value = d.invoice_entries || []
+}
+async function addInvoiceEntry() {
+  if (!parseFloat(invForm.amount)) { toast.error('开票金额不能为0（红字冲销请填负数）'); return }
+  if (!invForm.date) { toast.error('请选择开票日期'); return }
+  invBusy.value = true
+  try {
+    const res = await ar.addInvoiceEntry(editRec.value.id,
+      { amount: invForm.amount, tax_amount: invForm.tax || null, invoice_date: invForm.date })
+    _syncInvDerived(res.data)
+    invForm.amount = ''; invForm.tax = ''; invForm.date = todayCST()
+    nextTick(() => invListEl.value?.scrollTo({ top: invListEl.value.scrollHeight }))
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { invBusy.value = false }
+}
+async function removeInvoiceEntry(en) {
+  if (!(await confirmDlg(`删除第${en.entry_no}次开票（${en.amount}）？主表开票金额/税额/日期将随之回退。`))) return
+  invBusy.value = true
+  try {
+    const res = await ar.deleteInvoiceEntry(editRec.value.id, en.id)
+    _syncInvDerived(res.data)
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { invBusy.value = false }
 }
 
 // ── 开票批次号批量设置 ──────────────────────────────────────────────────────────
@@ -1628,7 +1675,7 @@ function openCreate() {
     operation_date: todayCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-    adjustment_reason: '',
+    adjustment_reason: '', adjustment_date: '',
     target_collection_date: '', invoice_batch_no: '', notes: '',
   })
   adjList.value = []
@@ -1658,13 +1705,15 @@ function openEdit(rec) {
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
-    adjustment_reason: '',
+    adjustment_reason: '', adjustment_date: '',
     target_collection_date: rec.target_collection_date || '',
     invoice_batch_no: rec.invoice_batch_no || '',
     notes: rec.notes,
   })
   adjList.value = rec.adjustments || []
   Object.assign(adjForm, { amount: '', reason: '', date: todayCST() })
+  invList.value = rec.invoice_entries || []
+  Object.assign(invForm, { amount: '', tax: '', date: todayCST() })
   showModal.value = true
   focusRecModal()
 }
@@ -1817,7 +1866,7 @@ async function undoBatchPay(b, ev) {
   let detail = []
   try {
     const pv = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids, preview: true })
-    detail = (pv.data?.rows || []).slice(0, 12).map(r => `记录#${r.record_id}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将被撤回`)
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `${r.short_name || '未关联项目'}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将撤回`)
     if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 笔`)
   } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
   if (!(await confirmDlg({ title: `撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元`,
@@ -1837,6 +1886,19 @@ async function saveRec(andContinue = false) {
   saving.value = true
   try {
     if (!recForm.operation_date) { toast.error('请选择运作日期'); saving.value = false; return }
+    // 操作习惯：编辑态里填好了 调整/开票 未点「追加」就直接点保存 → 视为要提交这一笔，
+    // 自动落库后再保存（「追加」按钮只在一次录多笔时才需要）。校验不过则中断保存并提示。
+    if (editRec.value && parseFloat(adjForm.amount)) {
+      if (!adjForm.reason.trim()) { toast.error('已填调整金额：请补写调整原因后再保存（或清空金额）'); saving.value = false; return }
+      if (!adjForm.date) { toast.error('已填调整金额：请选择调整日期后再保存'); saving.value = false; return }
+      await addAdjustment()
+      if (parseFloat(adjForm.amount)) { saving.value = false; return }   // 落库失败（表单未被清空）→ 中断
+    }
+    if (editRec.value && parseFloat(invForm.amount)) {
+      if (!invForm.date) { toast.error('已填开票金额：请选择开票日期后再保存'); saving.value = false; return }
+      await addInvoiceEntry()
+      if (parseFloat(invForm.amount)) { saving.value = false; return }
+    }
     const payload = {
       project_id: recForm.project_id, operation_date: recForm.operation_date,
       estimated_amount: recForm.estimated_amount || 0,
@@ -1851,6 +1913,7 @@ async function saveRec(andContinue = false) {
     if (!editRec.value) {
       payload.account_diff_adjustment = recForm.account_diff_adjustment || 0
       payload.adjustment_reason = recForm.adjustment_reason || ''
+      payload.adjust_date = recForm.adjustment_date || null
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -1861,7 +1924,7 @@ async function saveRec(andContinue = false) {
       Object.assign(recForm, {
         estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
         invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-        adjustment_reason: '', invoice_batch_no: '', notes: '',
+        adjustment_reason: '', adjustment_date: '', invoice_batch_no: '', notes: '',
       })
       toast.success(`已连续保存 ${contSaveCount} 条`)
       nextTick(() => estAmtInput.value?.focus())
@@ -2098,7 +2161,7 @@ async function savePayment(andNext = false) {
       await load()
       if (!nx) {
         showPayModal.value = false
-        toast.success('列表中已无下一条未结清记录，已收尾关闭')
+        toast.success('回款已保存，列表中已无下一条未结清记录，已关闭录入窗口')
       } else {
         payRec.value = items.value.find(r => r.id === nx.id) || nx
         // 日期/方式/账户沿用本次值（同一批回款单常为同日同账户），金额/备注清空
@@ -2206,7 +2269,9 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const visCols = COL_VIS_DEFS.filter(d => showCol(d.key)).map(d => d.key)
+    // 导出列取「生效可见性」：税额在开票跟踪 tab 被 showTax 恒显时，导出须同屏一致
+    const effVis = k => (k === 'r_tax_amount' ? showTax.value : showCol(k))
+    const visCols = COL_VIS_DEFS.filter(d => effVis(d.key)).map(d => d.key)
     const params = buildParams(scopedParams())
     if (visCols.length < COL_VIS_DEFS.filter(d => auth.canArView(d.key)).length) {
       params.vis_cols = visCols.join(',')
@@ -2330,7 +2395,7 @@ function clearFilters() {
       <div class="drop-box">
         <div class="drop-icon">📥</div>
         <div class="drop-title">松开鼠标，导入应收明细</div>
-        <div class="drop-sub">支持 .xlsx / .xls，与「↑ 导入」按钮同一校验流程</div>
+        <div class="drop-sub">支持 .xlsx / .xls，与点击「↑ 导入」效果相同</div>
       </div>
     </div>
     <div class="ar-head">
@@ -2359,9 +2424,14 @@ function clearFilters() {
             </button>
             <div v-if="showColPanel" class="col-vis-drop">
               <div class="col-vis-head">列显示设置</div>
-              <label v-for="c in COL_VIS_DEFS.filter(d => auth.canArView(d.key))" :key="c.key" class="col-vis-item">
-                <input type="checkbox" :checked="!hiddenCols.has(c.key)" @change="toggleColVis(c.key)" />
-                {{ c.label }}
+              <!-- 税额在开票跟踪 tab 被 showTax 恒显：面板置灰勾选态并标注，避免开关看似失灵 -->
+              <label v-for="c in COL_VIS_DEFS.filter(d => auth.canArView(d.key))" :key="c.key" class="col-vis-item"
+                :class="{ 'cv-forced': c.key === 'r_tax_amount' && activeTab === 'invoice' }">
+                <input type="checkbox"
+                  :checked="c.key === 'r_tax_amount' && activeTab === 'invoice' ? true : !hiddenCols.has(c.key)"
+                  :disabled="c.key === 'r_tax_amount' && activeTab === 'invoice'"
+                  @change="toggleColVis(c.key)" />
+                {{ c.label }}<i v-if="c.key === 'r_tax_amount' && activeTab === 'invoice'" class="cv-note">本页始终显示</i>
               </label>
             </div>
             <div v-if="showColPanel" class="col-vis-backdrop" @click="showColPanel = false"></div>
@@ -2481,7 +2551,7 @@ function clearFilters() {
             </div>
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
-          <span class="rc-hint" title="在任意行上点鼠标右键：催收日志 / 编辑 / 录入回款 / 复制(整行·项目·客户·批次·未收) / 删除">
+          <span class="rc-hint" title="在任意行上点鼠标右键：催款工作台 / 编辑 / 以此新建应收 / 录入回款 / 复制(整行·项目·客户·批次·未收) / 删除">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 3v6"/></svg>
             右键行可操作
           </span>
@@ -2738,7 +2808,7 @@ function clearFilters() {
                 <th class="ctr"><ColumnFilter label="批次号" field="invoice_batch_no" type="text" :values-provider="distinctProvider" :model-value="colFilters.invoice_batch_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_batch_no',v)" @sort="o=>setSort('invoice_batch_no',o)" /></th>
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票额" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
-                <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
+                <th v-if="showTax" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_invoice_date')" class="ctr"><ColumnFilter label="开票日期" field="invoice_date" type="date" :model-value="colFilters.invoice_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_date',v)" @sort="o=>setSort('invoice_date',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="开票状态" field="invoice_status" type="enum" :sortable="false" :no-exclude="true" :options="DIM_OPTS.invoice_status" :model-value="dimModel('invoice_status')" @update:model-value="v=>onDimCol('invoice_status',v)" /></th>
@@ -2870,7 +2940,7 @@ function clearFilters() {
                   </td>
                   <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
-                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
+                  <td v-if="showTax" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
                     :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'invoice_date')">
                     <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'invoice_date'" v-model="inlineEdit.value"
@@ -2951,7 +3021,7 @@ function clearFilters() {
             <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
             <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>
             <span v-if="show('r_actual_invoice_amount')" class="bb-item"><i>开票</i><b>{{ fmtCell(summaryData.invoiced) }}</b></span>
-            <span v-if="show('r_tax_amount')" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
+            <span v-if="showTax" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
             <span v-if="show('r_account_diff')" class="bb-item adj"><i>差额调整</i><b>{{ fmtCell(summaryData.adj) }}</b></span>
             <span v-if="show('r_payments')" class="bb-item ok"><i>已收</i><b>{{ fmtCell(summaryData.collected) }}</b></span>
             <span v-if="show('r_outstanding')" class="bb-item warn"><i>未收</i><b>{{ fmtCell(summaryData.outstanding) }}</b></span>
@@ -3211,7 +3281,7 @@ function clearFilters() {
           <button v-if="payTotal > size" :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
           <span class="page-info"><template v-if="payTotal > size">第 {{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · </template>共 {{ payTotal }} 条</span>
           <button v-if="payTotal > size" :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
-          <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">Go</button></span>
+          <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">跳转</button></span>
         </div>
 
         <!-- 底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）-->
@@ -3328,18 +3398,49 @@ function clearFilters() {
                 <span>预估上账金额</span>
                 <input ref="estAmtInput" v-model="recForm.estimated_amount" type="number" step="0.01" />
               </label>
-              <label class="form-field">
-                <span>实际开票金额</span>
-                <input v-model="recForm.actual_invoice_amount" type="number" step="0.01" placeholder="开票后填写" />
-              </label>
-              <label class="form-field">
-                <span>税额（差额模式手填）</span>
-                <input v-model="recForm.tax_amount" type="number" step="0.01" placeholder="全额模式自动计算" />
-              </label>
-              <label class="form-field">
-                <span>开票日期</span>
-                <input v-model="recForm.invoice_date" type="date" />
-              </label>
+              <!-- 新建：首笔开票直接填（后端自动落为开票明细#1）；编辑：开票明细管理器（多次开票） -->
+              <template v-if="!editRec">
+                <label class="form-field">
+                  <span>实际开票金额</span>
+                  <input v-model="recForm.actual_invoice_amount" type="number" step="0.01" placeholder="开票后填写" />
+                </label>
+                <label class="form-field">
+                  <span>税额（差额模式手填）</span>
+                  <input v-model="recForm.tax_amount" type="number" step="0.01" placeholder="全额模式自动计算" />
+                </label>
+                <label class="form-field">
+                  <span>开票日期</span>
+                  <input v-model="recForm.invoice_date" type="date" />
+                </label>
+              </template>
+              <div v-else class="form-field span2 adj-box">
+                <span>开票明细<i class="adj-total">已开合计 {{ fmtCell(invTotal) }} · 税额 {{ recForm.tax_amount ? fmtCell(recForm.tax_amount) : '—' }} · 首开日 {{ recForm.invoice_date || '—' }}</i></span>
+                <div v-if="recForm.invoice_batch_no" class="adj-empty">
+                  该记录属于开票批次「{{ recForm.invoice_batch_no }}」——开票请在批次开票中操作（批次支持多次开票并逐次分摊到成员）
+                </div>
+                <template v-else>
+                  <div v-if="invList.length" ref="invListEl" class="adj-list">
+                    <div v-for="en in invList" :key="en.id" class="adj-item">
+                      <b :class="parseFloat(en.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(en.amount) >= 0 ? '' : '' }}{{ en.amount }}</b>
+                      <span class="adj-reason">第{{ en.entry_no }}次<template v-if="en.tax_amount"> · 税 {{ en.tax_amount }}</template></span>
+                      <em v-if="en.invoice_date">{{ en.invoice_date }}</em>
+                      <em v-if="en.created_by_name">{{ en.created_by_name }}</em>
+                      <button type="button" class="adj-del" title="删除该次开票" @click="removeInvoiceEntry(en)">✕</button>
+                    </div>
+                  </div>
+                  <div v-else class="adj-empty">未开票——每次开票一行（金额/税额/日期），可多次追加，红字冲销填负数</div>
+                  <div class="adj-add">
+                    <input v-model="invForm.amount" type="number" step="0.01" class="adj-amt-inp" placeholder="开票金额（价税合计）" />
+                    <input v-model="invForm.tax" type="number" step="0.01" class="adj-amt-inp" placeholder="税额（差额模式填）" title="差额模式逐笔手填；全额模式留空由税率自动计算" />
+                    <i class="adj-break" aria-hidden="true"></i>
+                    <input v-model="invForm.date" type="date" class="adj-date-inp" title="本次开票日期；主表开票日期取首次开票日" />
+                    <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="invBusy" @click="addInvoiceEntry">
+                      {{ invBusy ? '…' : '＋ 追加开票' }}
+                    </button>
+                  </div>
+                  <div class="adj-empty" style="margin-top:4px">填好金额直接点「保存」即生效；「追加开票」仅在一次录多笔时使用</div>
+                </template>
+              </div>
               <label class="form-field">
                 <span>对账日期</span>
                 <input v-model="recForm.reconciliation_date" type="date" />
@@ -3360,6 +3461,11 @@ function clearFilters() {
                          @keydown="onAdjKeydown" />
                 </label>
                 <label class="form-field">
+                  <span>调整日期</span>
+                  <input v-model="recForm.adjustment_date" type="date"
+                         title="决定该笔差额归入哪个月/周；留空默认随运作日期" />
+                </label>
+                <label class="form-field span2">
                   <span>差额原因</span>
                   <textarea v-model="recForm.adjustment_reason" rows="1" maxlength="200"
                             class="adj-reason-mini" placeholder="如：运费差/客户扣款/补付"
@@ -3367,8 +3473,10 @@ function clearFilters() {
                 </label>
               </template>
               <div v-else class="form-field span2 adj-box">
-                <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i></span>
-                <div v-if="adjList.length" class="adj-list">
+                <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i>
+                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button></span>
+                <div v-if="adjList.length" ref="adjListEl" class="adj-list">
                   <div v-for="a in adjList" :key="a.id" class="adj-item">
                     <b :class="parseFloat(a.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(a.amount) >= 0 ? '+' : '' }}{{ a.amount }}</b>
                     <span class="adj-reason" :title="a.reason">{{ a.reason || '未填原因' }}</span>
@@ -3380,10 +3488,8 @@ function clearFilters() {
                 <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
                 <div class="adj-add">
                   <input v-model="adjForm.amount" type="number" step="0.01" class="adj-amt-inp"
-                         :placeholder="adjSuggest != null ? `按 = 填 ${adjSuggest.toFixed(2)}` : '金额（可负）'"
+                         :placeholder="adjSuggest != null ? `调整金额（按 = 填 ${adjSuggest.toFixed(2)}）` : '调整金额（可负）'"
                          @keydown="onAdjKeydown" />
-                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
-                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button>
                   <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
                   <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="adjBusy" @click="addAdjustment">
                     {{ adjBusy ? '…' : '＋ 追加调整' }}
@@ -3391,12 +3497,13 @@ function clearFilters() {
                   <!-- 原因独占整行、自动增高：长原因全程可见（用户反馈：单行窄框看不到写了什么） -->
                   <div class="adj-reason-wrap">
                     <textarea v-model="adjForm.reason" rows="1" maxlength="200" class="adj-reason-inp"
-                              placeholder="原因（必填，如：运费差/客户扣款/补付，写清来龙去脉便于日后追溯）"
+                              placeholder="原因（必填，如：运费差/客户扣款/补付）"
                               @input="autoGrowAdjReason"></textarea>
                     <span v-if="adjForm.reason.length >= 150" class="adj-reason-count"
                           :class="{ full: adjForm.reason.length >= 200 }">{{ adjForm.reason.length }}/200</span>
                   </div>
                 </div>
+                <div class="adj-empty" style="margin-top:4px">填好金额与原因直接点「保存」即生效；「追加调整」仅在一次录多笔时使用</div>
               </div>
               <label class="form-field span2">
                 <span>开票批次号<span style="color:var(--muted);font-size:11px;margin-left:4px">合并开票时多条填同一批次号，留空=单独开票</span></span>
@@ -3523,7 +3630,7 @@ function clearFilters() {
             </div>
 
             <!-- 成员可开余额 -->
-            <table v-if="invDetail" class="bp-mtable" style="margin-top:12px">
+            <div class="bp-mwrap" style="margin-top:12px"><table v-if="invDetail" class="bp-mtable">
               <thead><tr><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th class="r">剩余可开</th><th class="r">税率</th><th class="r">税额</th></tr></thead>
               <tbody>
                 <tr v-for="m in invDetail.members" :key="m.id" :style="parseFloat(m.invoice_room) > 0 ? '' : 'opacity:.55'">
@@ -3535,7 +3642,7 @@ function clearFilters() {
                   <td class="r">{{ m.tax_amount != null ? fmtCell(m.tax_amount) : (m.invoice_mode === '差额' ? '手填' : '—') }}</td>
                 </tr>
               </tbody>
-            </table>
+            </table></div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showBatchInvoice = false">关闭</button>
@@ -3556,7 +3663,7 @@ function clearFilters() {
           <div class="modal-body">
             <template v-if="!batchPayResult">
               <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
-                一张发票到一笔钱，不用再手工拆账：金额将按<strong>运作日期先进先出</strong>自动分摊到批次内仍有未收的记录。
+                一笔回款对应整批发票，无需手工分配：金额将按<strong>运作日期先进先出</strong>自动分摊到批次内仍有未收的记录。
                 可多次录入（部分回款），每次从未结清的记录继续分摊。
                 批次未收合计 <strong>{{ fmtCell(batchTarget?.outstanding) }}</strong> 元。
               </p>
@@ -3599,7 +3706,7 @@ function clearFilters() {
                   <em v-if="parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0)"
                       class="bp-overflow-hint">
                     本次到账将超出未收 {{ (parseFloat(batchPayForm.amount) - parseFloat(batchTarget?.outstanding || 0)).toFixed(2) }} 元
-                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项一键处理，否则将被拒绝' }}
+                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项即可自动转为预收；否则本次回款无法提交' }}
                   </em>
                 </label>
               </div>
@@ -3729,7 +3836,7 @@ function clearFilters() {
                 <span class="adv-hint-tag">可用预收</span>
                 <span>该项目尚有 <b>{{ payAdvance.count }}</b> 笔预收，余额合计
                   <b>{{ fmtAmt(payAdvance.total_balance) }}</b></span>
-                <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收页管理 →</button>
+                <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收预付页管理 →</button>
               </div>
               <ul class="adv-hint-list">
                 <li v-for="a in payAdvance.items.slice(0, 5)" :key="a.id" :class="{ on: advWoSel?.id === a.id }">
@@ -3769,7 +3876,7 @@ function clearFilters() {
                 </span>
                 <input ref="payAmtInput" v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
                        @keydown="onPayAmtKeydown" />
-                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，，本笔无法保存；多收部分请核实后在「差额调整」或「预收预付」中登记</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
@@ -4358,7 +4465,8 @@ function clearFilters() {
 
 /* ══ 差额调整明细管理器 ══ */
 .adj-box .adj-total { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
-.adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0;
+  max-height: 210px; overflow-y: auto; scroll-behavior: smooth; padding-right: 2px; }
 .adj-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(120,120,120,0.14); border-radius: 8px; background: rgba(255,255,255,0.6); font-size: 12.5px; }
 .adj-item b { font-variant-numeric: tabular-nums; min-width: 76px; }
 .adj-pos { color: var(--c-success); } .adj-neg { color: var(--c-danger); }
@@ -4368,7 +4476,9 @@ function clearFilters() {
 .adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
-.adj-add .adj-amt-inp { width: 120px; }
+/* 弹性宽度：占位提示（如「开票金额（价税合计）」）完整可见不截断 */
+.adj-add .adj-amt-inp { flex: 1 1 150px; min-width: 150px; }
+.adj-add .adj-break { flex-basis: 100%; height: 0; }
 .adj-add .adj-reason-wrap { position: relative; flex: 1 0 100%; }
 .adj-add .adj-reason-inp {
   width: 100%; resize: none; overflow-y: auto; line-height: 1.5;
@@ -4420,6 +4530,7 @@ function clearFilters() {
 
 /* 批次开票事件 */
 .bi-events { margin-bottom: 10px; padding: 7px 10px; background: rgba(21,101,192,.04);
+  max-height: 190px; overflow-y: auto;
   border: 1px solid rgba(21,101,192,.18); border-radius: 8px; }
 .bi-events-head { font-size: 11.5px; font-weight: 700; color: var(--c-info); margin-bottom: 3px; }
 .bi-events-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
@@ -4490,6 +4601,8 @@ function clearFilters() {
 .bpc-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bpc-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
+.bp-mwrap { max-height: 260px; overflow-y: auto; border-radius: 8px; }
+.bp-mwrap .bp-mtable th { position: sticky; top: 0; z-index: 1; background: #eef4fb; }
 .bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
 .bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }
@@ -4747,6 +4860,8 @@ function clearFilters() {
   transition: background .1s; border-radius: 6px; margin: 1px 4px;
 }
 .col-vis-item:hover { background: rgba(201,99,66,0.06); }
+.col-vis-item.cv-forced { opacity: .75; cursor: default; }
+.cv-note { font-style: normal; font-size: 10.5px; color: var(--muted); margin-left: auto; padding-left: 8px; }
 .col-vis-item input { cursor: pointer; }
 .col-vis-backdrop { position: fixed; inset: 0; z-index: 199; }
 .btn.on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.06); }

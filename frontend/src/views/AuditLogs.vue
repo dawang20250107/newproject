@@ -31,7 +31,11 @@ const MODULE_OPTS = [
   { value: 'ar', label: '应收' },
   { value: 'caiwu', label: '财务分析' },
 ]
-const METHOD_OPTS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+const METHOD_OPTS = [{ value: 'GET', label: '查询' }, { value: 'POST', label: '新增' },
+  { value: 'PUT', label: '修改' }, { value: 'PATCH', label: '修改' }, { value: 'DELETE', label: '删除' }]
+// 展示中文动作名/模块名/结果，筛选与导出仍用原值（后端契约不变）
+const METHOD_LABEL = { GET: '查询', POST: '新增', PUT: '修改', PATCH: '修改', DELETE: '删除' }
+const MODULE_LABEL = Object.fromEntries(MODULE_OPTS.map(o => [o.value, o.label]))
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
 const q = ref('')                  // 顶部全局关键字（操作人 / 接口路径模糊）
@@ -181,7 +185,7 @@ onMounted(async () => {
   <div>
     <div class="topbar">
       <div class="topbar-left"><h1>审计日志</h1>
-        <span class="audit-sub">系统自动记录的全部写操作（谁 / 何时 / 做了什么 / 结果），共 {{ total }} 条</span>
+        <span class="audit-sub">系统自动记录的全部数据变更操作（谁 / 何时 / 做了什么 / 结果），共 {{ total }} 条</span>
       </div>
       <div class="ctrl-row">
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ 导出CSV' }}</button>
@@ -220,13 +224,13 @@ onMounted(async () => {
                 <td class="ctr time-cell">{{ fmtTime(l.created_at) }}</td>
                 <td class="fw">{{ l.user_name || '（未登录）' }}</td>
                 <td class="ctr">
-                  <span class="method-badge" :class="methodClass(l.method)">{{ l.method }}</span>
+                  <span class="method-badge" :class="methodClass(l.method)" :title="l.method">{{ METHOD_LABEL[l.method] || l.method }}</span>
                   <span v-if="pathLabel(l.path)" class="op-label">{{ pathLabel(l.path) }}</span>
                 </td>
                 <td class="path-cell" :title="l.path">{{ l.path }}</td>
-                <td class="ctr"><span class="mod-chip">{{ l.module || '—' }}</span></td>
+                <td class="ctr"><span class="mod-chip">{{ MODULE_LABEL[l.module] || l.module || '—' }}</span></td>
                 <td class="ctr">
-                  <span class="st-badge" :class="l.status_code < 400 ? 'st-ok' : 'st-fail'">{{ l.status_code }}</span>
+                  <span class="st-badge" :class="l.status_code < 400 ? 'st-ok' : 'st-fail'" :title="`HTTP ${l.status_code}`">{{ l.status_code < 400 ? '成功' : '失败' }}</span>
                 </td>
                 <td class="ctr ip-cell">{{ l.ip || '—' }}</td>
                 <td class="ctr">

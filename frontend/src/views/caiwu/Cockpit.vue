@@ -1103,7 +1103,7 @@ const ctxMatrixItems = computed(() => {
       :error="aiErr"
       title="AI 全局经营分析"
       :subtitle="aiScopeLabel"
-      loading-hint="正在连接更强推理模型，马上开始逐字生成…"
+      loading-hint="正在生成深度经营分析，请稍候…"
       :estimate-seconds="90"
       @close="aiVisible = false"
       @reanalyze="runAiAnalysis"
@@ -1142,7 +1142,7 @@ const ctxMatrixItems = computed(() => {
               <div class="cfa-quota-bar" :class="{ warn: quotaPct >= 80, full: quotaPct >= 100 }"
                 :title="aiUsage.price_note"><i :style="{ width: Math.min(100, quotaPct) + '%' }"></i></div>
               <span class="cfa-quota-txt" :class="{ full: quotaPct >= 100 }">
-                {{ (aiUsage.today.total / 10000).toFixed(1) }}<template v-if="aiUsage.budget">/{{ (aiUsage.budget / 10000).toFixed(0) }}</template>万tk
+                {{ (aiUsage.today.total / 10000).toFixed(1) }}<template v-if="aiUsage.budget">/{{ (aiUsage.budget / 10000).toFixed(0) }}</template>万 token
                 ≈¥{{ aiUsage.today.cost_est }}<template v-if="quotaPct >= 100">　额度已用完，明日恢复</template>
               </span>
             </template>

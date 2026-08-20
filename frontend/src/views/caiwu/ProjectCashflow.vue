@@ -292,7 +292,7 @@ onMounted(() => {
       <div v-if="loading" class="pcf-empty">加载中…</div>
       <div v-else-if="err" class="pcf-empty err">{{ err }}</div>
       <div v-else-if="!rows.length" class="pcf-empty">
-        {{ data ? `暂无数据（所选时段内无关联${isProjDim ? '项目简称' : '二级部门'}的回款或付款）` : '请选择筛选条件后加载' }}
+        {{ data ? `暂无数据（所选时段内无关联${isProjDim ? '项目简称' : '二级部门'}的回款或付款）` : '暂无数据，可调整上方筛选条件查看' }}
       </div>
 
       <div v-else class="table-wrap page-scroll">

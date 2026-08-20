@@ -315,6 +315,14 @@ class ApprovalRecord(models.Model):
     payee = models.CharField('收款主体', max_length=200)
     status = models.CharField('审批状态', max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
     archived = models.BooleanField('是否归档', default=False, db_index=True)
+    # 关闭剩余排款（对标 ERP「订单关闭」）：申请金额未排满但剩余额度确定不再执行
+    # （按实际发生额结算/业务取消/并入其他审批等）。置位后记录归档、剩余可排按 0 计
+    # （不再污染「未排合计」与关账清单），已排批次与付款链路一律不动；可撤销关闭。
+    schedule_closed = models.BooleanField('排款已关闭', default=False, db_index=True)
+    schedule_closed_reason = models.CharField('关闭原因', max_length=200, blank=True, default='')
+    schedule_closed_at = models.DateTimeField('关闭时间', null=True, blank=True)
+    schedule_closed_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True,
+                                           blank=True, related_name='closed_approval_schedules')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='approval_records')
     # ── 外部来源溯源（运输事业部对账单导入专用）──────────────────────────────
     # 运输事业部从自有系统导出的对账单结构与排款表不一致：金额为负、列结构不同。
@@ -360,8 +368,18 @@ class ApprovalRecord(models.Model):
             'notes': self.notes,
             'amount': str(self.amount),
             'scheduled_amount': str(self.scheduled_amount or 0),
-            'remaining_amount': str(max(Decimal('0'), (self.amount or Decimal('0'))
-                                        - (self.scheduled_amount or Decimal('0')))),
+            # 关闭剩余排款后剩余按 0 计：口径与列表合计/关账清单一致（剩余额度不再执行）
+            'remaining_amount': ('0' if self.schedule_closed else
+                                 str(max(Decimal('0'), (self.amount or Decimal('0'))
+                                         - (self.scheduled_amount or Decimal('0'))))),
+            'unscheduled_amount': str(max(Decimal('0'), (self.amount or Decimal('0'))
+                                          - (self.scheduled_amount or Decimal('0')))),
+            'schedule_closed': self.schedule_closed,
+            'schedule_closed_reason': self.schedule_closed_reason,
+            'schedule_closed_at': (self.schedule_closed_at.isoformat()
+                                   if self.schedule_closed_at else None),
+            'schedule_closed_by': (self.schedule_closed_by.name
+                                   if self.schedule_closed_by_id else ''),
             'payee': self.payee,
             'status': self.status,
             'archived': self.archived,
